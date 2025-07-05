@@ -1,0 +1,2011 @@
+---
+title: "Epigenetics Simulations for Manuscript"
+author: "HVM"
+date: "4/10/2023"
+output: html_document
+---
+
+# Code Setup
+```{r}
+# Functions
+require(fields) # has image.plot() function for heatmaps
+require(Rmisc) # Has summarySE function
+std <- function(x) sd(x)/sqrt(length(x)) # Define standard deviation function for downstream work
+
+# Plotting commands
+indcol <- 'gray80'
+groupcol <- 'black'
+```
+
+# Model Functions
+
+## Model version 1: Demethylation occurs first
+
+```{r methylationmodel}
+
+methylmodel <- function(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon){
+  
+  #### DESCRIPTIONS AND INFORMATION ####
+  ## EPIGENETIC PARAMETERS 
+  # num_C = number of cytosine sites for methylation
+  # env_prop = proportion of environmental sites that are methylated
+  # demeth_rate = baseline tendency for demethylation
+  # demeth_rate_pref = tendency for demethylation of sites for which you have information they should be demethylated
+  # demethylvar = variance in demethylation rates
+  # methyl_rate = baseline tendency for methylation
+  # methyl_rate_pref = tendency for methylation of sites for which you have information they should be methylated to match the environment
+  # methylvar = variance in methylation rates
+  # epsilon = difference in methylation and demethylation tendencies
+  
+  ## RATE PARAMETERS
+  # envshiftfreq = frequency of environmental shifts
+  # replicatorfreq = frequency of birth/death events
+  # mutationfreq = frequency of mutation events
+  # mutationsd = standard deviation of mutation in any of the tendencies
+  
+  ## SIMULATION PARAMETERS
+  # t_end = end of simulation
+  # pop_size = size of population
+  
+  
+  #### SET UP SIMULATION EVENTS ####
+  ## Environmental change timepoints
+  if(envshiftfreq==0){ # Timepoints with environmental shifts
+    envshifts <- 0 # if there are no environmental shifts, then set = 0
+  } else{
+  envshifts <- round(seq(from = 1, to = t_end, by = envshiftfreq)) # Set timepoints at which the environment shifts
+  }
+  
+  ## Birth-death timepoints
+  if(replicatorfreq==0){ # Timepoints with birth/death events
+    birthdays <- 0 # if there are no birth/death events, then set = 0
+  } else{
+  birthdays <- round(seq(from = 1, to = t_end, by = replicatorfreq)) # Set timepoints at which birth/death events happen
+  }
+  
+  ## Mutational timepoints
+  if(mutationfreq==0){ # Timepoints with mutation events
+    mutations <- 0 # if there are no mutation events, then set = 0
+  } else{
+  mutations <- round(seq(from = 1, to = t_end, by = mutationfreq)) # Set timepoints at which mutations occur
+  }
+  
+  
+  #### INITIALIZE THE MODEL ####
+  ## Set up the environment
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+  
+  ## Set up individuals
+  ind_prop <- rep(env_prop,pop_size) # initial methylation proportion of individuals in the population
+  ind_demeth <- seq(from =max(0,demeth_rate*(1-demethylvar)), to = demeth_rate*(1+demethylvar), length = pop_size) # rate at which you demethylate (scaled by stress); initialized with evenly spaced individuals
+  ind_demeth_pref <- seq(from =max(0,demeth_rate_pref*(1-demethylvar)), to = demeth_rate_pref*(1+demethylvar), length = pop_size) # rate at which you preferentially demethylate (scaled by stress); initialized with randomly spaced individuals
+  ind_methyl <- seq(from =max(0,methyl_rate*(1-methylvar)), to = methyl_rate*(1+methylvar), length = pop_size) # rate at which you methylate (scaled by stress)
+  ind_methyl_pref <- seq(from =max(0,methyl_rate_pref*(1-methylvar)), to = methyl_rate_pref*(1+methylvar), length = pop_size) # rate at which you preferentially methylate (scaled by stress)
+  methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C) # initial methylation state of the individuals in the population. Each column represents an individual in the population; each row represents a CpG site
+  for(i in 1:pop_size){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # Sets up initial distribution of methylation for each individual in the population
+  
+  ## Set up holding variables
+  Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+  Stress_record_intermediate <- Stress_record
+  Methyl_record <- Stress_record
+  DemethylRate_record <- Stress_record
+  DemethylRatePref_record <- Stress_record
+  MethylRate_record <- Stress_record
+  MethylRatePref_record <- Stress_record
+  MethylSite_record <- array(data=NA,dim=c(num_C,pop_size,t_end))
+  
+  
+  #### RUN THE ALGORITHM ####
+  for(j in 1:t_end){  # For each timestep
+    # 1. Compute the "stress" level of each individual
+    S_pop <- colSums(abs(methyl_pop-methyl_env))/num_C # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual. Normalize to total number of methylation sites
+    Stress_record[j,] <- S_pop # Save the results
+
+    # 2. Demethylate 
+    for(i in 1:pop_size){ # for each individual
+      for(k in 1:num_C){ # for each CpG site
+        if(methyl_pop[k,i]==1){ # if the site is presently methylated
+          if(methyl_env[k]==1){ # if the environment should be methylated at that site
+            if(runif(1) < ind_demeth[i]*S_pop[i]){ methyl_pop[k,i] <- 0} # draw a random number; demethylate if below the baseline probability of demethylating a site at random
+          } else {
+            if(runif(1) < ind_demeth_pref[i]*S_pop[i]){ methyl_pop[k,i] <- 0} # draw a random number; demethylate if below the probability of preferentially demethylating a site.
+          }
+        }
+      }
+    }
+      
+    # 3. Re-compute the stress level; currently disabled
+    #S_pop <- colSums(abs(methyl_pop-methyl_env))/num_C # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual. Normalize to total number of methylation sites
+    Stress_record_intermediate[j,] <- S_pop
+    
+    # 4. Methylate 
+    for(i in 1:pop_size){ # for each individual
+      for(k in 1:num_C){ # for each CpG site
+        if(methyl_pop[k,i]==0){ # if the site is presently demethylated
+          if(methyl_env[k]==0){ # if the environment should not be methylated at that site
+            if(runif(1) < ind_methyl[i]*S_pop[i]){ methyl_pop[k,i] <- 1} # draw a random number; methylate if below the baseline probability of methylating a site at random
+          } else { # if the environment should be methylated at that site
+            if(runif(1) < ind_methyl_pref[i]*S_pop[i]){ methyl_pop[k,i] <- 1} # draw a random number; methylate if below the probability of preferentially methylating a site.
+          }
+        }
+      }
+    }
+    
+    # Compute the number of methylated sites
+    Methyl_record[j,] <- colSums(methyl_pop)
+
+    
+    # 5. If it's time for a birth/death event, select an individual for replacement and replace them
+    if(j %in% birthdays){
+      # 5a. Find the individual with the lowest fitness (i.e., max stress)
+      killone <- which(S_pop %in% max(S_pop))[1] # [1] ensures that you choose the first one in case there is more than one individual with the same stress value
+      # 5b. Find the individual with the highest fitness (i.e., min stress)
+      reproduceone <- which(S_pop %in% min(S_pop))[1]
+      # 5c. Replace the individual
+      ind_methyl[killone] <- ind_methyl[reproduceone]
+      ind_methyl_pref[killone] <- ind_methyl_pref[reproduceone]
+      ind_demeth[killone] <- ind_demeth[reproduceone]
+      ind_demeth_pref[killone] <- ind_demeth_pref[reproduceone]
+      methyl_pop[,killone] <- methyl_pop[,reproduceone]
+    }
+    
+    
+    # 6. If it's time for a mutation, select an individual to be replaced by a mutant, and replace them
+    # Note: Because we haven't recomputed the S_pop vector, this functionally identifies and replaces the same individual that we'd killed and replaced in Step 5. Because the "replacer" (highest-fitness individual) isn't altered during Step 5, it's as though Step 5 never occurred, although it's a little computationally inefficient to do the birth-death process twice.
+    if(j %in% mutations){
+      # 6a. Find the individual with the lowest fitness (i.e., max stress)
+      killone <- which(S_pop %in% max(S_pop))[1] # [1] ensures that you choose the first one
+      # 6b. Find the individual with the highest fitness (i.e., min stress)
+      mutone <- which(S_pop %in% min(S_pop))[1]
+      # 6c. Replace the individual, with mutation
+      mut.demeth <- (ind_demeth[mutone]+ind_demeth_pref[mutone])/2 # figure out the current demethylation tendency
+      new.demeth <- max(0,rnorm(1,mut.demeth,mutationsd*mut.demeth)) # mutate it, making sure it's non-negative
+      
+      ind_methyl_pref[killone] <- ind_methyl_pref[mutone]
+      ind_methyl[killone] <- ind_methyl[mutone]
+      ind_demeth[killone] <- new.demeth*(1-epsilon)
+      ind_demeth_pref[killone] <- new.demeth*(1+epsilon)
+      methyl_pop[,killone] <- methyl_pop[,mutone]
+    }
+    
+    
+    # 7. If it's a time for an environmental shift, shift the environment.
+    if(j %in% envshifts){
+      methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+      while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+      #methyl_env <- 1-methyl_env
+    }
+    
+    
+    # 8. Store results from this timestep
+    DemethylRate_record[j,] <- ind_demeth
+    DemethylRatePref_record[j,] <- ind_demeth_pref
+    MethylRate_record[j,] <- ind_methyl
+    MethylRatePref_record[j,] <- ind_methyl_pref
+    MethylSite_record[,,j] <- methyl_pop
+    
+  }
+  
+  methylprop <- NaN*Stress_record
+for(i in 1:t_end){ # for each timepoint
+  for(j in 1:pop_size){ # for each individual
+    methylprop[i,j] <- sum(MethylSite_record[,j,i])/num_C
+  }
+}
+
+  Results <- list("Stress" = Stress_record, "Stress_int" = Stress_record_intermediate, "Methyl" = Methyl_record, "DemethRate" = DemethylRate_record,"DemethRatePref" = DemethylRatePref_record, "MethRate" = MethylRate_record, "MethRatePref" = MethylRatePref_record, "MethylSites"=MethylSite_record, "MethylProp" = methylprop)
+  
+  Results
+}
+
+```
+
+
+## Model version 2: Methylation occurs first
+
+```{r methylationmodel.v2}
+
+methylmodel.v2 <- function(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon){
+  
+  #### DESCRIPTIONS AND INFORMATION ####
+  ## EPIGENETIC PARAMETERS 
+  # num_C = number of cytosine sites for methylation
+  # env_prop = proportion of environmental sites that are methylated
+  # demeth_rate = baseline tendency for demethylation
+  # demeth_rate_pref = tendency for demethylation of sites for which you have information they should be demethylated
+  # demethylvar = variance in demethylation rates
+  # methyl_rate = baseline tendency for methylation
+  # methyl_rate_pref = tendency for methylation of sites for which you have information they should be methylated to match the environment
+  # methylvar = variance in methylation rates
+  # epsilon = difference in methylation and demethylation tendencies
+  
+  ## RATE PARAMETERS
+  # envshiftfreq = frequency of environmental shifts
+  # replicatorfreq = frequency of birth/death events
+  # mutationfreq = frequency of mutation events
+  # mutationsd = standard deviation of mutation in any of the tendencies
+  
+  ## SIMULATION PARAMETERS
+  # t_end = end of simulation
+  # pop_size = size of population
+  
+  
+  #### SET UP SIMULATION EVENTS ####
+  ## Environmental change timepoints
+  if(envshiftfreq==0){ # Timepoints with environmental shifts
+    envshifts <- 0 # if there are no environmental shifts, then set = 0
+  } else{
+  envshifts <- round(seq(from = 1, to = t_end, by = envshiftfreq)) # Set timepoints at which the environment shifts
+  }
+  
+  ## Birth-death timepoints
+  if(replicatorfreq==0){ # Timepoints with birth/death events
+    birthdays <- 0 # if there are no birth/death events, then set = 0
+  } else{
+  birthdays <- round(seq(from = 1, to = t_end, by = replicatorfreq)) # Set timepoints at which birth/death events happen
+  }
+  
+  ## Mutational timepoints
+  if(mutationfreq==0){ # Timepoints with mutation events
+    mutations <- 0 # if there are no mutation events, then set = 0
+  } else{
+  mutations <- round(seq(from = 1, to = t_end, by = mutationfreq)) # Set timepoints at which mutations occur
+  }
+  
+  
+  #### INITIALIZE THE MODEL ####
+  ## Set up the environment
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+  
+  ## Set up individuals
+  ind_prop <- rep(env_prop,pop_size) # initial methylation proportion of individuals in the population
+  ind_demeth <- seq(from =max(0,demeth_rate*(1-demethylvar)), to = demeth_rate*(1+demethylvar), length = pop_size) # rate at which you demethylate (scaled by stress); initialized with evenly spaced individuals
+  ind_demeth_pref <- seq(from =max(0,demeth_rate_pref*(1-demethylvar)), to = demeth_rate_pref*(1+demethylvar), length = pop_size) # rate at which you preferentially demethylate (scaled by stress); initialized with randomly spaced individuals
+  ind_methyl <- seq(from =max(0,methyl_rate*(1-methylvar)), to = methyl_rate*(1+methylvar), length = pop_size) # rate at which you methylate (scaled by stress)
+  ind_methyl_pref <- seq(from =max(0,methyl_rate_pref*(1-methylvar)), to = methyl_rate_pref*(1+methylvar), length = pop_size) # rate at which you preferentially methylate (scaled by stress)
+  methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C) # initial methylation state of the individuals in the population. Each column represents an individual in the population; each row represents a CpG site
+  for(i in 1:pop_size){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # Sets up initial distribution of methylation for each individual in the population
+  
+  ## Set up holding variables
+  Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+  Stress_record_intermediate <- Stress_record
+  Methyl_record <- Stress_record
+  DemethylRate_record <- Stress_record
+  DemethylRatePref_record <- Stress_record
+  MethylRate_record <- Stress_record
+  MethylRatePref_record <- Stress_record
+  MethylSite_record <- array(data=NA,dim=c(num_C,pop_size,t_end))
+  
+  
+  #### RUN THE ALGORITHM ####
+  for(j in 1:t_end){  # For each timestep
+    # 1. Compute the "stress" level of each individual
+    S_pop <- colSums(abs(methyl_pop-methyl_env))/num_C # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual. Normalize to total number of methylation sites
+    Stress_record[j,] <- S_pop # Save the results
+      
+    
+    # 2. Methylate 
+    for(i in 1:pop_size){ # for each individual
+      for(k in 1:num_C){ # for each CpG site
+        if(methyl_pop[k,i]==0){ # if the site is presently demethylated
+          if(methyl_env[k]==0){ # if the environment should not be methylated at that site
+            if(runif(1) < ind_methyl[i]*S_pop[i]){ methyl_pop[k,i] <- 1} # draw a random number; methylate if below the baseline probability of methylating a site at random
+          } else { # if the environment should be methylated at that site
+            if(runif(1) < ind_methyl_pref[i]*S_pop[i]){ methyl_pop[k,i] <- 1} # draw a random number; methylate if below the probability of preferentially methylating a site.
+          }
+        }
+      }
+    }
+    
+    # Compute the number of methylated sites
+    Methyl_record[j,] <- colSums(methyl_pop)
+
+    
+    # 3. Re-compute the stress level; currently disabled
+    #S_pop <- colSums(abs(methyl_pop-methyl_env))/num_C # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual. Normalize to total number of methylation sites
+    Stress_record_intermediate[j,] <- S_pop
+    
+
+    # 4. Demethylate 
+    for(i in 1:pop_size){ # for each individual
+      for(k in 1:num_C){ # for each CpG site
+        if(methyl_pop[k,i]==1){ # if the site is presently methylated
+          if(methyl_env[k]==1){ # if the environment should be methylated at that site
+            if(runif(1) < ind_demeth[i]*S_pop[i]){ methyl_pop[k,i] <- 0} # draw a random number; demethylate if below the baseline probability of demethylating a site at random
+          } else {
+            if(runif(1) < ind_demeth_pref[i]*S_pop[i]){ methyl_pop[k,i] <- 0} # draw a random number; demethylate if below the probability of preferentially demethylating a site.
+          }
+        }
+      }
+    }
+    
+    # 5. If it's time for a birth/death event, select an individual for replacement and replace them
+    if(j %in% birthdays){
+      # 5a. Find the individual with the lowest fitness (i.e., max stress)
+      killone <- which(S_pop %in% max(S_pop))[1] # [1] ensures that you choose the first one in case there is more than one individual with the same stress value
+      # 5b. Find the individual with the highest fitness (i.e., min stress)
+      reproduceone <- which(S_pop %in% min(S_pop))[1]
+      # 5c. Replace the individual
+      ind_methyl[killone] <- ind_methyl[reproduceone]
+      ind_methyl_pref[killone] <- ind_methyl_pref[reproduceone]
+      ind_demeth[killone] <- ind_demeth[reproduceone]
+      ind_demeth_pref[killone] <- ind_demeth_pref[reproduceone]
+      methyl_pop[,killone] <- methyl_pop[,reproduceone]
+    }
+    
+    
+    # 6. If it's time for a mutation, select an individual to be replaced by a mutant, and replace them
+    # Note: Because we haven't recomputed the S_pop vector, this functionally identifies and replaces the same individual that we'd killed and replaced in Step 5. Because the "replacer" (highest-fitness individual) isn't altered during Step 5, it's as though Step 5 never occurred, although it's a little computationally inefficient to do the birth-death process twice.
+    if(j %in% mutations){
+      # 6a. Find the individual with the lowest fitness (i.e., max stress)
+      killone <- which(S_pop %in% max(S_pop))[1] # [1] ensures that you choose the first one
+      # 6b. Find the individual with the highest fitness (i.e., min stress)
+      mutone <- which(S_pop %in% min(S_pop))[1]
+      # 6c. Replace the individual, with mutation
+      mut.demeth <- (ind_demeth[mutone]+ind_demeth_pref[mutone])/2 # figure out the current demethylation tendency
+      new.demeth <- max(0,rnorm(1,mut.demeth,mutationsd*mut.demeth)) # mutate it, making sure it's non-negative
+      
+      ind_methyl_pref[killone] <- ind_methyl_pref[mutone]
+      ind_methyl[killone] <- ind_methyl[mutone]
+      ind_demeth[killone] <- new.demeth*(1-epsilon)
+      ind_demeth_pref[killone] <- new.demeth*(1+epsilon)
+      methyl_pop[,killone] <- methyl_pop[,mutone]
+    }
+    
+    
+    # 7. If it's a time for an environmental shift, shift the environment.
+    if(j %in% envshifts){
+      methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+      while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+      #methyl_env <- 1-methyl_env
+    }
+    
+    
+    # 8. Store results from this timestep
+    DemethylRate_record[j,] <- ind_demeth
+    DemethylRatePref_record[j,] <- ind_demeth_pref
+    MethylRate_record[j,] <- ind_methyl
+    MethylRatePref_record[j,] <- ind_methyl_pref
+    MethylSite_record[,,j] <- methyl_pop
+    
+  }
+  
+  methylprop <- NaN*Stress_record
+for(i in 1:t_end){ # for each timepoint
+  for(j in 1:pop_size){ # for each individual
+    methylprop[i,j] <- sum(MethylSite_record[,j,i])/num_C
+  }
+}
+
+  Results <- list("Stress" = Stress_record, "Stress_int" = Stress_record_intermediate, "Methyl" = Methyl_record, "DemethRate" = DemethylRate_record,"DemethRatePref" = DemethylRatePref_record, "MethRate" = MethylRate_record, "MethRatePref" = MethylRatePref_record, "MethylSites"=MethylSite_record, "MethylProp" = methylprop)
+  
+  Results
+}
+
+```
+
+
+# Environmental tracking
+
+Here we explore how differing degrees of environmental information can enable tracking.
+
+```{r}
+
+## EPIGENETIC PARAMETERS 
+num_C <- 100 #= number of cytosine sites for methylation
+env_prop <- 0.5 #= proportion of environmental sites that are methylated
+methyl_rate <- 0.1 #= baseline tendency for methylation
+methyl_rate_pref <- methyl_rate #= tendency for methylation of sites for which you have information that they should be methylated to match the environment
+methylvar <- 0 #= variance in methylation rates
+epsilon <- 0.8  #= decoupling between demeth and pref demeth
+demeth_rate <- 0 #= baseline tendency for demethylation
+demeth_rate_pref <- 2*methyl_rate #= tendency for demethylation of sites for which you have information that they should be demethylated
+demethylvar <- 0 #= variance in demethylation rates
+
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 20 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 500 #= frequency of environmental shifts
+replicatorfreq <- 0 #= frequency of birth/death events
+mutationfreq <- 0 #= frequency of mutation events
+mutationsd <- 0 #= standard deviation of mutation in any of the tendencies
+  
+  
+
+run1 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+
+```
+
+
+```{r}
+
+demeth_rate <- methyl_rate
+demeth_rate_pref <- methyl_rate
+
+run2 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+```
+
+
+
+```{r,fig.height=4.5,fig.width=7}
+
+par(mfrow=c(2,2))
+
+par(mar=c(2,4,3,1))
+plot(run2$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='No Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run2$Stress[,i],col='gray50')
+}
+lines(rowMeans(run2$Stress),lwd=2,col='black')
+
+
+par(mar=c(2,2,3,3))
+plot(run1$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run1$Stress[,i],col='gray50')
+}
+lines(rowMeans(run1$Stress),lwd=2,col='black')
+legend(x='topright',inset=c(0.025,.05),legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+
+
+par(mar=c(4,4,1,1))
+plot(run2$MethylProp,type='n',las=1,xlab='Time',ylab='Marker proportion',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run2$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run2$MethylProp),lwd=2,col='black')
+
+par(mar=c(4,2,1,3))
+plot(run1$MethylProp,type='n',las=1,xlab='Time',ylab='Marker proportion',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run1$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run1$MethylProp),lwd=2,col='black')
+
+```
+
+
+Let's try to make a spectrum of results based on different amounts of preferential tendency. We have done this by coupling the relative rates to one another using the parameter $\epsilon$. 
+
+$$
+m_j = \frac{b\left[d_j + p_j\right]}{2} = \frac{b\left[m_j\left(1-\epsilon\right)+m_j\left(1+\epsilon\right)\right]}{2}
+$$
+
+This approach has the benefit of preventing the demethylation rates from ever being negative so long as $\epsilon \leq 1$.
+
+The parameter $b$ (with $b \geq 0$) scales the overall rate of demethylation relative to methylation. When $b > 1$, demethylation has a higher stress sensitivity and occurs more frequently, and when $b < 1$, the opposite is true. 
+
+```{r}
+methyl_rate <- .1
+methyl_rate_pref <- methyl_rate
+epsilon <- 1
+demeth_rate <- max(0,methyl_rate*(1-epsilon)) # put in a max function just for safety
+demeth_rate_pref <- methyl_rate*(1+epsilon)
+
+
+## SIMULATION PARAMETERS
+t_end <- 4000 #= end of simulation
+pop_size <- 20 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 2000 #= frequency of environmental shifts
+
+
+
+run3 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+par(mar=c(4,4,1,1))
+plot(run3$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+for(i in 1:pop_size){
+  lines(run3$Stress[,i],col='gray50')
+}
+lines(rowMeans(run3$Stress),lwd=2,col='black')
+legend(x='topright',inset=0.05,legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+
+```
+
+So... we can now explore (1) how the value of epsilon changes the fitness, (2) whether demethylation tendencies that have a different mean than methylation change fitness, and (3) how the absolute rates affect the speed of tracking, stress, and the variance.
+
+How environmental information, $\epsilon$, affects results:
+
+```{r}
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 50 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 500 #= frequency of environmental shifts
+
+## EPIGENETIC PARAMETERS
+methyl_rate <- 0.2
+methyl_rate_pref <- methyl_rate
+epsilon.set <- seq(from = 0, to = 1, length.out = 11)
+stress.saver <- matrix(data=NA,nrow=length(epsilon.set),ncol=pop_size)
+methyl.saver <- stress.saver
+
+for( j in 1:length(epsilon.set)){
+  epsilon <- epsilon.set[j]
+  demeth_rate <- max(0,methyl_rate*(1-epsilon)) # put in a max function just for safety
+  demeth_rate_pref <- methyl_rate*(1+epsilon)
+
+  run3 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+  par(mar=c(4,4,1,1))
+  plot(run3$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+  for(i in 1:pop_size){
+    lines(run3$Stress[,i],col='gray50')
+  }
+  lines(rowMeans(run3$Stress),lwd=2,col='black')
+  legend(x='topright',inset=0.05,legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+  
+  stress.saver[j,] <- run3$Stress[t_end,]
+  methyl.saver[j,] <- run3$MethylProp[t_end,]
+}
+
+```
+
+We can then make a plot of stress vs $\epsilon$.
+```{r,fig.height=6,fig.width=5}
+indcol = rgb(0.5,0.5,0.5,0.2)
+jittersize <- 0.5
+par(mar=c(2,4,2.5,1),mfrow=c(2,1))
+plot(c(0:1),c(0:1),las=1,xlab='Preference (epsilon)',ylab='Stress (Prop Mismatched Sites)',type='n')
+abline(h=0.5,lty=2)
+for(i in 1:pop_size){
+  points(jitter(epsilon.set,jittersize),stress.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(epsilon.set,rowMeans(stress.saver)+apply(stress.saver,1,sd)
+,epsilon.set,rowMeans(stress.saver)-apply(stress.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(epsilon.set,rowMeans(stress.saver),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+par(mar=c(4,4,0.5,1))
+plot(c(0:1),c(0:1),las=1,xlab='Preference (ε)',ylab='Prop Sites Marked',type='n')
+abline(h=0.5,lty=2)
+for(i in 1:pop_size){
+  points(jitter(epsilon.set,jittersize),methyl.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(epsilon.set,rowMeans(methyl.saver)+apply(methyl.saver,1,sd)
+,epsilon.set,rowMeans(methyl.saver)-apply(methyl.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(epsilon.set,rowMeans(methyl.saver),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+```
+
+Consolidating into a single plot
+
+```{r,fig.height=6,fig.width=5}
+
+
+#par(mfrow=c(2,2))
+pop_size <- 20
+
+layout(matrix(c(1,2,1,2,3,4,3,4,5,5,5,5,5,5),nrow=7,ncol=2,byrow=T))
+
+par(mar=c(2,4,3,1))
+plot(run2$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='No Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run2$Stress[,i],col='gray50')
+}
+lines(rowMeans(run2$Stress),lwd=2,col='black')
+
+
+par(mar=c(2,2,3,3))
+plot(run1$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run1$Stress[,i],col='gray50')
+}
+lines(rowMeans(run1$Stress),lwd=2,col='black')
+legend(x='topright',inset=c(0.025,.05),legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+
+
+par(mar=c(4,4,1,1))
+plot(run2$MethylProp,type='n',las=1,xlab='Time',ylab='Proportion marked sites',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run2$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run2$MethylProp),lwd=2,col='black')
+
+par(mar=c(4,2,1,3))
+plot(run1$MethylProp,type='n',las=1,xlab='Time',ylab='Proportion marked sites',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run1$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run1$MethylProp),lwd=2,col='black')
+
+par(mar=c(4,4,1,3))
+plot(c(0:1),c(0:1),las=1,xlab='Preference (epsilon)',ylab='Stress (Prop Mismatched Sites)',type='n')
+abline(h=0.5,lty=2)
+for(i in 1:pop_size){
+  points(jitter(epsilon.set,jittersize),stress.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(epsilon.set,rowMeans(stress.saver)+apply(stress.saver,1,sd)
+,epsilon.set,rowMeans(stress.saver)-apply(stress.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(epsilon.set,rowMeans(stress.saver),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+
+```
+
+Colorful version:
+```{r,fig.height=6,fig.width=5}
+
+# MetBrewer, Benedictus
+loweps.col <- rgb(184/255,57/255,97/255)
+higheps.col <- rgb(65/255,96/255,200/255)
+
+
+#par(mfrow=c(2,2))
+pop_size <- 20
+
+layout(matrix(c(1,2,1,2,3,4,3,4,5,5,5,5,5,5),nrow=7,ncol=2,byrow=T))
+
+par(mar=c(2,4,3,1))
+plot(run2$Stress,type='n',las=1,xlab='',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='(a) No Environmental Information        ')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run2$Stress[,i],col='gray50')
+}
+lines(rowMeans(run2$Stress),lwd=2,col='black')
+# Terminal point
+#arrows(t_end,sd(run2$Stress[t_end,])+rowMeans(run2$Stress)[t_end],t_end,rowMeans(run2$Stress)[t_end]-sd(run2$Stress[t_end,]),code=3,angle=90,length=.05,col=loweps.col)
+#points(t_end,rowMeans(run2$Stress)[t_end],col=loweps.col,bg=loweps.col,pch=21,cex=1.5)
+arrows(t_end,rowMeans(stress.saver)[1]+apply(stress.saver,1,sd)[1]
+,t_end,rowMeans(stress.saver)[1]-apply(stress.saver,1,sd)[1], code = 3, angle=90, length = 0.05,col=loweps.col)
+points(t_end,rowMeans(stress.saver)[1],col=loweps.col,bg=loweps.col,pch=21,cex=1.5)
+
+par(mar=c(2,2,3,3))
+plot(run1$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='(b) Environmental Information      ')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run1$Stress[,i],col='gray50')
+}
+lines(rowMeans(run1$Stress),lwd=2,col='black')
+legend(x='topright',inset=c(0.025,.05),legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+# Terminal point
+arrows(t_end,rowMeans(stress.saver)[11]+apply(stress.saver,1,sd)[11]
+,t_end,rowMeans(stress.saver)[11]-apply(stress.saver,1,sd)[11], code = 3, angle=90, length = 0.05,col=higheps.col)
+points(t_end,rowMeans(stress.saver)[11],col=higheps.col,bg=higheps.col,pch=21,cex=1.5)
+
+
+par(mar=c(4,4,1,1))
+plot(run2$MethylProp,type='n',las=1,xlab='',ylab='Proportion marked sites',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run2$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run2$MethylProp),lwd=2,col='black')
+mtext('Time',side=1,line=2.2,cex=.65)
+
+par(mar=c(4,2,1,3))
+plot(run1$MethylProp,type='n',las=1,xlab='',ylab='Proportion marked sites',xlim=c(0,t_end),ylim=c(0,1))
+mtext('Time',side=1,line=2.2,cex=.65)
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run1$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run1$MethylProp),lwd=2,col='black')
+
+ptcolspectrum <- colorRampPalette(c(loweps.col,higheps.col))
+ptcolors <- ptcolspectrum(length(epsilon.set))
+  
+  
+par(mar=c(4,4,1,3))
+plot(c(0:1),c(0:1),las=1,xlab='Preference (epsilon)',ylab='Stress (Prop Mismatched Sites)',type='n')
+abline(h=0.5,lty=3)
+for(i in 1:pop_size){
+  points(jitter(epsilon.set,jittersize),stress.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(epsilon.set,rowMeans(stress.saver)+apply(stress.saver,1,sd)
+,epsilon.set,rowMeans(stress.saver)-apply(stress.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(epsilon.set,rowMeans(stress.saver),pch=21,cex=2,col=ptcolors,bg=ptcolors)
+
+#lines(c(epsilon.set[1]-.01,-.1),c(0.55,2),xpd=T,col=loweps.col)
+
+
+```
+
+
+We can contrast these results with those for a model in which methylation happens before demethylation.
+
+```{r}
+
+## EPIGENETIC PARAMETERS 
+num_C <- 100 #= number of cytosine sites for methylation
+env_prop <- 0.5 #= proportion of environmental sites that are methylated
+methyl_rate <- 0.1 #= baseline tendency for methylation
+methyl_rate_pref <- methyl_rate #= tendency for methylation of sites for which you have information that they should be methylated to match the environment
+methylvar <- 0 #= variance in methylation rates
+epsilon <- 0.8  #= decoupling between demeth and pref demeth
+demeth_rate <- 0 #= baseline tendency for demethylation
+demeth_rate_pref <- 2*methyl_rate #= tendency for demethylation of sites for which you have information that they should be demethylated
+demethylvar <- 0 #= variance in demethylation rates
+
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 20 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 500 #= frequency of environmental shifts
+replicatorfreq <- 0 #= frequency of birth/death events
+mutationfreq <- 0 #= frequency of mutation events
+mutationsd <- 0 #= standard deviation of mutation in any of the tendencies
+  
+  
+
+run11 <- methylmodel.v2(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+
+```
+
+
+```{r}
+
+demeth_rate <- methyl_rate
+demeth_rate_pref <- methyl_rate
+
+run12 <- methylmodel.v2(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+```
+
+
+
+```{r,fig.height=4.5,fig.width=7}
+
+par(mfrow=c(2,2))
+
+par(mar=c(2,4,3,1))
+plot(run12$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='No Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run12$Stress[,i],col='gray50')
+}
+lines(rowMeans(run12$Stress),lwd=2,col='black')
+
+
+par(mar=c(2,2,3,3))
+plot(run11$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run11$Stress[,i],col='gray50')
+}
+lines(rowMeans(run11$Stress),lwd=2,col='black')
+legend(x='topright',inset=c(0.025,.05),legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+
+
+par(mar=c(4,4,1,1))
+plot(run12$MethylProp,type='n',las=1,xlab='Time',ylab='Methylation proportion',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run12$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run12$MethylProp),lwd=2,col='black')
+
+par(mar=c(4,2,1,3))
+plot(run11$MethylProp,type='n',las=1,xlab='Time',ylab='Methylation proportion',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run11$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run11$MethylProp),lwd=2,col='black')
+
+```
+
+And a model for which the preference is for methylation rather than demethylation
+
+```{r}
+
+## EPIGENETIC PARAMETERS 
+num_C <- 100 #= number of cytosine sites for methylation
+env_prop <- 0.5 #= proportion of environmental sites that are methylated
+demeth_rate <- 0.1 #= baseline tendency for methylation
+demeth_rate_pref <- demeth_rate #= tendency for methylation of sites for which you have information that they should be methylated to match the environment
+demethylvar <- 0 #= variance in methylation rates
+epsilon <- 0.8  #= decoupling between demeth and pref demeth
+methyl_rate <- 0 #= baseline tendency for demethylation
+methyl_rate_pref <- 2*demeth_rate #= tendency for demethylation of sites for which you have information that they should be demethylated
+methylvar <- 0 #= variance in demethylation rates
+
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 20 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 500 #= frequency of environmental shifts
+replicatorfreq <- 0 #= frequency of birth/death events
+mutationfreq <- 0 #= frequency of mutation events
+mutationsd <- 0 #= standard deviation of mutation in any of the tendencies
+  
+  
+
+run11 <- methylmodel.v2(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+
+```
+
+
+```{r}
+
+methyl_rate <- demeth_rate
+methyl_rate_pref <- demeth_rate
+
+run12 <- methylmodel.v2(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+```
+
+
+
+```{r,fig.height=4.5,fig.width=7}
+
+par(mfrow=c(2,2))
+
+par(mar=c(2,4,3,1))
+plot(run12$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='No Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run12$Stress[,i],col='gray50')
+}
+lines(rowMeans(run12$Stress),lwd=2,col='black')
+
+
+par(mar=c(2,2,3,3))
+plot(run11$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run11$Stress[,i],col='gray50')
+}
+lines(rowMeans(run11$Stress),lwd=2,col='black')
+legend(x='topright',inset=c(0.025,.05),legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+
+
+par(mar=c(4,4,1,1))
+plot(run12$MethylProp,type='n',las=1,xlab='Time',ylab='Methylation proportion',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run12$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run12$MethylProp),lwd=2,col='black')
+
+par(mar=c(4,2,1,3))
+plot(run11$MethylProp,type='n',las=1,xlab='Time',ylab='Methylation proportion',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run11$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run11$MethylProp),lwd=2,col='black')
+
+```
+And here we see that there's a transient increase in methylation rather than decrease.
+
+
+Creating a supplemental figure demonstrating this
+```{r}
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 50 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 500 #= frequency of environmental shifts
+
+## EPIGENETIC PARAMETERS
+demeth_rate <- 0.2
+demeth_rate_pref  <- demeth_rate
+epsilon.set <- seq(from = 0, to = 1, length.out = 11)
+stress.saver <- matrix(data=NA,nrow=length(epsilon.set),ncol=pop_size)
+methyl.saver <- stress.saver
+
+for( j in 1:length(epsilon.set)){
+  epsilon <- epsilon.set[j]
+  methyl_rate  <- max(0,demeth_rate*(1-epsilon)) # put in a max function just for safety
+  methyl_rate_pref <- demeth_rate*(1+epsilon)
+
+  run3 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+  par(mar=c(4,4,1,1))
+  plot(run3$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+  for(i in 1:pop_size){
+    lines(run3$Stress[,i],col='gray50')
+  }
+  lines(rowMeans(run3$Stress),lwd=2,col='black')
+  legend(x='topright',inset=0.05,legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+  
+  stress.saver[j,] <- run3$Stress[t_end,]
+  methyl.saver[j,] <- run3$MethylProp[t_end,]
+}
+
+```
+
+```{r,fig.height=6,fig.width=5}
+
+# MetBrewer, Benedictus
+loweps.col <- rgb(184/255,57/255,97/255)
+higheps.col <- rgb(65/255,96/255,200/255)
+
+
+#par(mfrow=c(2,2))
+pop_size <- 20
+
+layout(matrix(c(1,2,1,2,3,4,3,4,5,5,5,5,5,5),nrow=7,ncol=2,byrow=T))
+
+par(mar=c(2,4,3,1))
+plot(run12$Stress,type='n',las=1,xlab='',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='(a) No Environmental Information        ')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run12$Stress[,i],col='gray50')
+}
+lines(rowMeans(run12$Stress),lwd=2,col='black')
+# Terminal point
+arrows(t_end,rowMeans(stress.saver)[1]+apply(stress.saver,1,sd)[1]
+,t_end,rowMeans(stress.saver)[1]-apply(stress.saver,1,sd)[1], code = 3, angle=90, length = 0.05,col=loweps.col)
+points(t_end,rowMeans(stress.saver)[1],col=loweps.col,bg=loweps.col,pch=21,cex=1.5)
+
+par(mar=c(2,2,3,3))
+plot(run11$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='(b) Environmental Information      ')
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run11$Stress[,i],col='gray50')
+}
+lines(rowMeans(run11$Stress),lwd=2,col='black')
+legend(x='topright',inset=c(0.025,.05),legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+# Terminal point
+arrows(t_end,rowMeans(stress.saver)[11]+apply(stress.saver,1,sd)[11]
+,t_end,rowMeans(stress.saver)[11]-apply(stress.saver,1,sd)[11], code = 3, angle=90, length = 0.05,col=higheps.col)
+points(t_end,rowMeans(stress.saver)[11],col=higheps.col,bg=higheps.col,pch=21,cex=1.5)
+
+
+par(mar=c(4,4,1,1))
+plot(run12$MethylProp,type='n',las=1,xlab='',ylab='Proportion marked sites',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run12$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run12$MethylProp),lwd=2,col='black')
+mtext('Time',side=1,line=2.2,cex=.65)
+
+par(mar=c(4,2,1,3))
+plot(run11$MethylProp,type='n',las=1,xlab='',ylab='Proportion marked sites',xlim=c(0,t_end),ylim=c(0,1))
+mtext('Time',side=1,line=2.2,cex=.65)
+abline(h=.5,lty=3)
+for(i in 1:pop_size){
+  lines(run11$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run11$MethylProp),lwd=2,col='black')
+
+ptcolspectrum <- colorRampPalette(c(loweps.col,higheps.col))
+ptcolors <- ptcolspectrum(length(epsilon.set))
+  
+  
+par(mar=c(4,4,1,3))
+plot(c(0:1),c(0:1),las=1,xlab='Preference (epsilon)',ylab='Stress (Prop Mismatched Sites)',type='n')
+abline(h=0.5,lty=3)
+for(i in 1:pop_size){
+  points(jitter(epsilon.set,jittersize),stress.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(epsilon.set,rowMeans(stress.saver)+apply(stress.saver,1,sd)
+,epsilon.set,rowMeans(stress.saver)-apply(stress.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(epsilon.set,rowMeans(stress.saver),pch=21,cex=2,col=ptcolors,bg=ptcolors)
+
+#lines(c(epsilon.set[1]-.01,-.1),c(0.55,2),xpd=T,col=loweps.col)
+
+
+```
+
+
+
+
+
+## PART TWO: OPTIMAL COUPLING
+
+What about the absolute magnitude of the demethylation rates?
+
+```{r}
+
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 50 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 500 #= frequency of environmental shifts
+
+## EPIGENETIC PARAMETERS
+methyl_rate <- 0.2
+methyl_rate_pref <- methyl_rate
+epsilon <- 0.8
+base_rate <- seq(from = 0, to = 2, length.out = 15)
+stress.saver <- matrix(data=NA,nrow=length(base_rate),ncol=pop_size)
+methyl.saver <- stress.saver
+
+for( j in 1:length(base_rate)){
+  base <- base_rate[j]
+  demeth_rate <- max(0,base*(1-epsilon)) # put in a max function just for safety
+  demeth_rate_pref <- base*(1+epsilon)
+
+  run3 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+  par(mar=c(4,4,1,1))
+  plot(run3$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end),ylim=c(0,1),main='Environmental Information')
+  for(i in 1:pop_size){
+    lines(run3$Stress[,i],col='gray50')
+  }
+  lines(rowMeans(run3$Stress),lwd=2,col='black')
+  legend(x='topright',inset=0.05,legend=c('Individual','Popn. Mean'),lwd=c(1,2),col=c('gray50','black'))
+  
+  stress.saver[j,] <- run3$Stress[t_end,]
+  methyl.saver[j,] <- run3$MethylProp[t_end,]
+}
+
+
+
+
+```
+
+
+
+```{r,fig.height=7,fig.width=5.5,warning=F}
+indcol = rgb(0.5,0.5,0.5,0.2)
+jittersize <- 0.5
+par(mar=c(2,4,2.5,1),mfrow=c(2,1))
+plot(c(min(base_rate),max(base_rate)),c(0:1),las=1,xlab='Mean marker removal tendency ((d_j + p_j)/2)',ylab='Stress (Prop. mismatched sites)',type='n')
+abline(h=0.5,lty=3)
+abline(v= methyl_rate,lty=2)
+for(i in 1:pop_size){
+  points(jitter(base_rate,jittersize),stress.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(base_rate,rowMeans(stress.saver)+apply(stress.saver,1,sd)
+,base_rate,rowMeans(stress.saver)-apply(stress.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(base_rate,rowMeans(stress.saver),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+text(2.1,0.525,'Maximum expected stress', pos=2)
+axis(side=1,at=0.2,labels='m_j')
+
+par(mar=c(4,4,0.5,1))
+plot(c(min(base_rate),max(base_rate)),c(0:1),las=1,xlab=expression(paste('Mean marker removal tendency (',italic(o[j]),')')),ylab='Proportion marked sites',type='n')
+abline(h=0.5,lty=3)
+abline(v= methyl_rate,lty=2)
+for(i in 1:pop_size){
+  points(jitter(base_rate,jittersize),methyl.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(base_rate,rowMeans(methyl.saver)+apply(methyl.saver,1,sd)
+,base_rate,rowMeans(methyl.saver)-apply(methyl.saver,1,sd), code = 3, angle=90, length = 0.1)
+points(base_rate,rowMeans(methyl.saver),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+text(2.1,0.525,'Prop. environ. sites marked', pos=2)
+axis(side=1,at=0.2,labels='m_j')
+
+```
+
+Now let's run evolution to find the "best" demethylation tendency.
+
+```{r}
+
+  
+## EPIGENETIC PARAMETERS 
+num_C <- 100 #= number of cytosine sites for methylation
+env_prop <- 0.5 #= proportion of environmental sites that are methylated
+demethylvar <- 0.2 #= variance in demethylation rates
+methyl_rate <- 0.2#0.05 #= baseline tendency for methylation
+methyl_rate_pref <- methyl_rate #= tendency for methylation of sites for which you have information they should be methylated to match the environment
+methylvar <- 0 #= variance in methylation rates
+  
+
+epsilon <- 0.8
+base <- 2
+
+demeth_rate <- (1+base)*methyl_rate*(1-epsilon)
+demeth_rate_pref <- (1+base)*methyl_rate*(1+epsilon)
+
+## SIMULATION PARAMETERS
+t_end <- 20000 #= end of simulation
+pop_size <- 20 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 3000 #= frequency of environmental shifts
+replicatorfreq <- 5 #= frequency of birth/death events
+mutationfreq <- 10*replicatorfreq #= frequency of mutation events
+mutationsd <- 0.1 #= standard deviation of mutation in any of the tendencies
+  
+  
+
+run1 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+```
+
+
+
+```{r, fig.height=6,fig.width=4}
+par(mar=c(.5,4,3.5,1),mfrow=c(3,1))
+
+plot(run1$Stress,type='n',las=1,xlab='',ylab='',xlim=c(0,t_end),ylim=c(0,1))
+for(i in 1:pop_size){
+  lines(run1$Stress[,i],col='gray50')
+}
+lines(rowMeans(run1$Stress),lwd=2,col='black')
+mtext(expression(paste('Organism stress level (',italic(S[j]),')')),side=2,line=2.5,cex=.7)
+
+
+par(mar=c(2,4,2,1))
+plot(run1$Stress,type='n',las=1,xlab='',ylab='',xlim=c(0,t_end),ylim=c(0,1))
+abline(h=env_prop,lty=2,lwd=2)
+for(i in 1:pop_size){
+  lines(run1$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run1$MethylProp),lwd=2,col='black')
+mtext('Marker proportion',side=2,line=2.5,cex=.7)
+
+par(mar=c(3.5,4,0.5,1))
+
+#plot(run1$DemethRatePref,type='n',las=1,xlab='Time',ylab='Pref Demeth Tendency (p_j)',xlim=c(0,t_end),ylim=c(0,max(max(run1$DemethRatePref))))
+#for(i in 1:pop_size){
+#  lines(run1$DemethRatePref[,i],col='gray50')
+#}
+#lines(rowMeans(run1$DemethRatePref),lwd=2,col='black')
+
+plot(run1$DemethRatePref/2+run1$DemethRate/2,type='n',las=1,xlab='',ylab='',xlim=c(0,t_end),ylim=c(0,max(max(run1$DemethRatePref/2+run1$DemethRate/2))))
+abline(h= methyl_rate,lty=2,lwd=2)
+for(i in 1:pop_size){
+  lines(run1$DemethRatePref[,i]/2+run1$DemethRate[,i]/2,col='gray50')
+}
+lines(rowMeans((run1$DemethRatePref+run1$DemethRate)/2),lwd=2,col='black')
+mtext('Time',side=1,line=2.2,cex=.7)
+mtext(expression(paste('Mean removal tendency (',italic(o[j]),')')),side=2,line=2.5,cex=.7)
+
+
+```
+
+OK awesome! Looks like it works... Converges, and to a rate that's similar to what we've seen in the stress-minimization (figure above) so we can proceed.
+
+
+Next steps:
+
+- Code this to iterate over a range of methylation rates.
+
+
+```{r}
+
+## SIMULATION PARAMETERS
+t_end <- 20000 #= end of simulation
+pop_size <- 20 #= size of population
+env_prop <- 0.8 #= proportion of sites that are methylated
+
+## RATE PARAMETERS
+envshiftfreq <- 2000 #= frequency of environmental shifts
+replicatorfreq <- 10 #= frequency of birth/death events
+mutationfreq <- 10*replicatorfreq #= frequency of mutation events
+mutationsd <- 0.2 #= standard deviation of mutation in any of the tendencies
+
+## EPIGENETIC PARAMETERS
+epsilon <- 0.8
+methyl_rate_set <- seq(from = 0.01, to = 1, length.out = 5)
+base <- 2
+demeth_rate <- (1+base)*methyl_rate*(1-epsilon)
+demeth_rate_pref <- (1+base)*methyl_rate*(1+epsilon)
+
+## STORAGE VARIABLES
+stress.saver <- matrix(data=NA,nrow=length(methyl_rate_set),ncol=pop_size)
+methyl.saver <- stress.saver
+demethrate.saver <- stress.saver
+prefdemethrate.saver <- stress.saver
+
+for( j in 1:length(methyl_rate_set)){
+  methyl_rate <- methyl_rate_set[j]
+  methyl_rate_pref <- methyl_rate
+
+  run3 <- methylmodel(num_C,env_prop,envshiftfreq,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+  
+  stress.saver[j,] <- run3$Stress[t_end,]
+  methyl.saver[j,] <- run3$MethylProp[t_end,]
+  demethrate.saver[j,] <- run3$DemethRate[t_end,]
+  prefdemethrate.saver[j,] <- run3$DemethRatePref[t_end,]
+}
+
+
+
+
+
+```
+
+```{r, fig.height=6,fig.width=4}
+par(mar=c(2,4,3,1),mfrow=c(3,1))
+
+plot(run3$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level, S_j',xlim=c(0,t_end),ylim=c(0,1))
+for(i in 1:pop_size){
+  lines(run3$Stress[,i],col='gray50')
+}
+lines(rowMeans(run3$Stress),lwd=2,col='black')
+
+
+par(mar=c(3,4,2,1))
+plot(run3$Stress,type='n',las=1,xlab='Time',ylab='Methylation proportion',xlim=c(0,t_end),ylim=c(0,1))
+for(i in 1:pop_size){
+  lines(run3$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run3$MethylProp),lwd=2,col='black')
+
+par(mar=c(4,4,1,1))
+
+plot(run3$DemethRatePref,type='n',las=1,xlab='Time',ylab='Pref Demeth Tendency (p_j)',xlim=c(0,t_end),ylim=c(0,max(max(run3$DemethRatePref))))
+for(i in 1:pop_size){
+  lines(run3$DemethRatePref[,i],col='gray50')
+}
+lines(rowMeans(run3$DemethRatePref),lwd=2,col='black')
+
+```
+
+
+```{r}
+
+#save.image("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p8enviro.Rdata")
+
+
+```
+
+
+```{r}
+# Proportion methylation environmental sites = 0.5
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p5enviro.Rdata")
+
+# Proportion methylation environmental sites = 0.2
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p2enviro.Rdata")
+
+# Proportion methylation environmental sites = 0.8
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p8enviro.Rdata")
+```
+
+
+```{r,fig.height=4,fig.width=4,warning=F}
+indcol = rgb(0.5,0.5,0.5,0.2)
+jittersize <- 0.5
+#par(mar=c(2,4,2.5,1),mfrow=c(2,1))
+par(mar=c(4,4,1,1))
+plot(c(min(methyl_rate_set),max(methyl_rate_set)),c(min(methyl_rate_set),max(methyl_rate_set)),las=1,xlab='Methylation Tendency',ylab='Evolved Demethylation Tendency',type='n', ylim=c(min(demethrate.saver),max(prefdemethrate.saver)))
+abline(a=0,b=1,lty=3)
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),demethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(methyl_rate_set,rowMeans(demethrate.saver)+apply(demethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(demethrate.saver)-apply(demethrate.saver,1,sd), code = 3, angle=90, length = 0.1)
+lines(methyl_rate_set,rowMeans(demethrate.saver),col=loweps.col,lwd=2)
+points(methyl_rate_set,rowMeans(demethrate.saver),pch=21,cex=1.5,col=loweps.col,bg=loweps.col)
+
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),prefdemethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver)+apply(prefdemethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver)-apply(prefdemethrate.saver,1,sd), code = 3, angle=90, length = 0.1)
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver),col=higheps.col,lwd=2)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver),pch=21,cex=1.5,col=higheps.col,bg=higheps.col)
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),(demethrate.saver[,i]+prefdemethrate.saver[,i])/2,pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver+demethrate.saver)/2+apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2)-apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd), code = 3, angle=90, length = 0.1)
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),col=groupcol,lwd=2)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+legend(x = 'topleft',inset=c(0.03,0.03),legend=c('Baseline','Preferential','Average'),pch=21,col=c(loweps.col,higheps.col,groupcol),pt.cex=1.5,cex=.8,pt.bg = c(loweps.col,higheps.col,groupcol),title='Demethylation')
+
+
+
+```
+
+
+```{r,fig.height=2.5,fig.width=7.5,warning=F}
+indcol = rgb(0.5,0.5,0.5,0.2)
+jittersize <- 0.5
+
+
+par(mar=c(3.3,3.5,1.7,.5),mfrow=c(1,3))
+
+# Proportion methylation environmental sites = 0.2
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p2enviro.Rdata")
+
+plot(c(min(methyl_rate_set),max(methyl_rate_set)),c(min(methyl_rate_set),max(methyl_rate_set)),las=1,xlab='',ylab='',type='n', ylim=c(min(demethrate.saver),max(prefdemethrate.saver)))
+mtext('Evolved marker removal tendency',side=2,line=2.3,cex=.7)
+mtext(expression(paste('Marker addition tendency (',italic(m[j]),')')),side=1,line=2.3,cex=.7)
+mtext('(a) Environment 20% marked',side=3,line=.2,cex=.8)
+abline(a=0,b=1,lty=3)
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),demethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(demethrate.saver),col=loweps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(demethrate.saver)+apply(demethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(demethrate.saver)-apply(demethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(demethrate.saver),pch=21,cex=1.5,col=loweps.col,bg=loweps.col)
+
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),prefdemethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver),col=higheps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver)+apply(prefdemethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver)-apply(prefdemethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver),pch=21,cex=1.5,col=higheps.col,bg=higheps.col)
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),(demethrate.saver[,i]+prefdemethrate.saver[,i])/2,pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),col=groupcol,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver+demethrate.saver)/2+apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2)-apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+
+
+
+
+# Proportion methylation environmental sites = 0.5
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p5enviro.Rdata")
+
+par(mar=c(3.3,2.5,1.7,1.5))
+
+plot(c(min(methyl_rate_set),max(methyl_rate_set)),c(min(methyl_rate_set),max(methyl_rate_set)),las=1,xlab='',ylab='Evolved Marker removal Tendency',type='n', ylim=c(min(demethrate.saver),max(prefdemethrate.saver)))
+mtext(expression(paste('Marker addition tendency (',italic(m[j]),')')),side=1,line=2.3,cex=.7)
+mtext('(b) Environment 50% marked',side=3,line=.2,cex=.8)
+abline(a=0,b=1,lty=3)
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),demethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(demethrate.saver),col=loweps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(demethrate.saver)+apply(demethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(demethrate.saver)-apply(demethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(demethrate.saver),pch=21,cex=1.5,col=loweps.col,bg=loweps.col)
+
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),prefdemethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver),col=higheps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver)+apply(prefdemethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver)-apply(prefdemethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver),pch=21,cex=1.5,col=higheps.col,bg=higheps.col)
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),(demethrate.saver[,i]+prefdemethrate.saver[,i])/2,pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),col=groupcol,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver+demethrate.saver)/2+apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2)-apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+
+# Proportion methylation environmental sites = 0.8
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p8enviro.Rdata")
+par(mar=c(3.3,1.5,1.7,2.5))
+
+plot(c(min(methyl_rate_set),max(methyl_rate_set)),c(min(methyl_rate_set),max(methyl_rate_set)),las=1,xlab='',ylab='Evolved Demethylation Tendency',type='n', ylim=c(min(demethrate.saver),max(prefdemethrate.saver)))
+mtext(expression(paste('Marker addition tendency (',italic(m[j]),')')),side=1,line=2.3,cex=.7)
+mtext('(c) Environment 80% marked',side=3,line=.2,cex=.8)
+abline(a=0,b=1,lty=3)
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),demethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(demethrate.saver),col=loweps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(demethrate.saver)+apply(demethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(demethrate.saver)-apply(demethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(demethrate.saver),pch=21,cex=1.5,col=loweps.col,bg=loweps.col)
+
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),prefdemethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver),col=higheps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver)+apply(prefdemethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver)-apply(prefdemethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver),pch=21,cex=1.5,col=higheps.col,bg=higheps.col)
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),(demethrate.saver[,i]+prefdemethrate.saver[,i])/2,pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),col=groupcol,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver+demethrate.saver)/2+apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2)-apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+legend(x = 'topleft',inset=c(0.03,0.03),legend=c(expression(paste('Baseline, ',italic(d[j]))),expression(paste('Preferential, ',italic(p[j]))),expression(paste('Average, ',italic(o[j])))),pch=21,col=c(loweps.col,higheps.col,groupcol),pt.cex=1.5,cex=.9,pt.bg = c(loweps.col,higheps.col,groupcol),title='Marker removal tendency')
+
+
+
+```
+
+Extract slope for relationship between marker addition and removal w/ 50% environment marked 
+
+```{r,fig.height=4,fig.width=4}
+# Proportion methylation environmental sites = 0.5
+load("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EvoSimu_p5enviro.Rdata")
+
+par(mar=c(3.3,2.5,1.7,1.5))
+
+plot(c(min(methyl_rate_set),max(methyl_rate_set)),c(min(methyl_rate_set),max(methyl_rate_set)),las=1,xlab='',ylab='Evolved Marker removal Tendency',type='n', ylim=c(min(demethrate.saver),max(prefdemethrate.saver)))
+mtext('Marker addition tendency',side=1,line=2.3,cex=.7)
+mtext('(b) Environ. 50% marked',side=3,line=.2,cex=.9)
+abline(a=0,b=1,lty=3)
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),demethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(demethrate.saver),col=loweps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(demethrate.saver)+apply(demethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(demethrate.saver)-apply(demethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(demethrate.saver),pch=21,cex=1.5,col=loweps.col,bg=loweps.col)
+
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),prefdemethrate.saver[,i],pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver),col=higheps.col,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver)+apply(prefdemethrate.saver,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver)-apply(prefdemethrate.saver,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver),pch=21,cex=1.5,col=higheps.col,bg=higheps.col)
+
+for(i in 1:pop_size){
+  points(jitter(methyl_rate_set,jittersize),(demethrate.saver[,i]+prefdemethrate.saver[,i])/2,pch=21,cex=0.5,col=indcol,bg=indcol)
+}
+lines(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),col=groupcol,lwd=2)
+arrows(methyl_rate_set,rowMeans(prefdemethrate.saver+demethrate.saver)/2+apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd)
+,methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2)-apply(prefdemethrate.saver/2+demethrate.saver/2,1,sd), code = 3, angle=90, length = 0.08)
+points(methyl_rate_set,rowMeans(prefdemethrate.saver/2+demethrate.saver/2),pch=21,cex=1.5,col=groupcol,bg=groupcol)
+
+
+lm1 <- lm(rowMeans(prefdemethrate.saver/2+demethrate.saver/2)~methyl_rate_set)
+abline(lm1)
+
+```
+```{r}
+summary(lm1)
+evolved_demeth_intercept <- summary(lm1)$coefficients[1,1]
+evolved_demeth_slope <- summary(lm1)$coefficients[2,1]
+```
+
+
+## PART THREE: ENVIRONMENTAL TRACKING
+
+Reading in the model with periodic environmental fluctuations
+
+```{r methylationmodel-periodicenvironmentalfluctuations}
+
+methylmodel.periodic <- function(num_C,env_prop,envshiftfreq,envshiftsize,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon){
+  
+  ## EPIGENETIC PARAMETERS 
+  # num_C = number of cytosine sites for methylation
+  # env_prop = proportion of environmental sites that are methylated
+  # demeth_rate = baseline tendency for demethylation
+  # demeth_rate_pref = tendency for demethylation of sites for which you have information they should be demethylated
+  # demethylvar = variance in demethylation rates
+  # methyl_rate = baseline tendency for methylation
+  # methyl_rate_pref = tendency for methylation of sites for which you have information they should be methylated to match the environment
+  # methylvar = variance in methylation rates
+  # epsilon = difference in methylation and demethylation tendencies
+  
+  ## RATE PARAMETERS
+  # envshiftfreq = frequency of environmental shifts
+  # replicatorfreq = frequency of birth/death events
+  # mutationfreq = frequency of mutation events
+  # mutationsd = standard deviation of mutation in any of the tendencies
+  
+  ## SIMULATION PARAMETERS
+  # t_end = end of simulation
+  # pop_size = size of population
+  
+  
+  # SET UP SIMULATION
+  if(envshiftfreq==0){ # Timepoints with environmental shifts
+    envshifts <- 0 # if there are no environmental shifts, then set = 0
+  } else{
+  envshifts <- round(seq(from = 1, to = t_end, by = envshiftfreq)) # Set timepoints at which the environment shifts
+  }
+  
+  if(replicatorfreq==0){ # Timepoints with birth/death events
+    birthdays <- 0 # if there are no birth/death events, then set = 0
+  } else{
+  birthdays <- round(seq(from = 1, to = t_end, by = replicatorfreq)) # Set timepoints at which birth/death events happen
+  }
+  
+  if(mutationfreq==0){ # Timepoints with mutation events
+    mutations <- 0 # if there are no mutation events, then set = 0
+  } else{
+  mutations <- round(seq(from = 1, to = t_end, by = mutationfreq)) # Set timepoints at which mutations occur
+  }
+  
+  
+  # SET UP ENVIRONMENT
+  methyl_env <- matrix(data=NA,nrow = t_end, ncol = num_C )
+  methyl_env[1,] <- c(rep(1,round(num_C*env_prop)),rep(0,num_C-round(num_C*env_prop))) # Set first row with all methylation on the left and demethylation on the right.
+  
+  
+  # SET UP INDIVIDUALS
+  ind_prop <- rep(env_prop,pop_size) # initial methylation proportion of individuals in the population
+  ind_demeth <- seq(from =max(0,demeth_rate*(1-demethylvar)), to = demeth_rate*(1+demethylvar), length = pop_size) #runif(pop_size,min=demeth_rate*(1-demethylvar),max=demeth_rate*(1+demethylvar)) # rate at which you demethylate (scaled by stress); initialized with evenly spaced individuals
+  ind_demeth_pref <- seq(from =max(0,demeth_rate_pref*(1-demethylvar)), to = demeth_rate_pref*(1+demethylvar), length = pop_size) #runif(pop_size,min=demeth_rate_pref*(1-demethylvar),max=demeth_rate_pref*(1+demethylvar)) # rate at which you preferentially demethylate (scaled by stress); initialized with randomly spaced individuals
+  ind_methyl <- seq(from =max(0,methyl_rate*(1-methylvar)), to = methyl_rate*(1+methylvar), length = pop_size) #runif(pop_size,min=methyl_rate*(1-methylvar),max=methyl_rate*(1+methylvar)) # rate at which you methylate (scaled by stress)
+  ind_methyl_pref <- seq(from =max(0,methyl_rate_pref*(1-methylvar)), to = methyl_rate_pref*(1+methylvar), length = pop_size) #runif(pop_size,min=methyl_rate_pref*(1-methylvar),max=methyl_rate_pref*(1+methylvar)) # rate at which you preferentially methylate (scaled by stress)
+  methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C) # initial methylation state of the individuals in the population. Each column represents an individual in the population; each row represents a CpG site
+  for(i in 1:pop_size){ methyl_pop[,i] <- methyl_env[1,] } # Sets up initial distribution of methylation for each individual in the population
+  #for(i in 1:pop_size){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # Sets up initial distribution of random methylation for each individual in the population
+  
+  
+  # SET UP HOLDING VARIABLES
+  Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+  Stress_record_intermediate <- Stress_record
+  Methyl_record <- Stress_record
+  DemethylRate_record <- Stress_record
+  DemethylRatePref_record <- Stress_record
+  MethylRate_record <- Stress_record
+  MethylRatePref_record <- Stress_record
+  MethylSite_record <- array(data=NA,dim=c(num_C,pop_size,t_end))
+  
+  # RUN THE ALGORITHM
+  for(j in 1:t_end){  # For each timestep
+    # 1. Compute the "stress" level of each individual
+    S_pop <- colSums(abs(methyl_pop-methyl_env[j,]))/num_C # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual. Normalize to total number of methylation sites
+    Stress_record[j,] <- S_pop # Save the results
+
+    # 2. Demethylate 
+    for(i in 1:pop_size){ # for each individual
+      for(k in 1:num_C){ # for each CpG site
+        if(methyl_pop[k,i]==1){ # if the site is presently methylated
+          if(methyl_env[j,k]==1){ # if the environment should be methylated at that site
+            if(runif(1) < ind_demeth[i]*S_pop[i]){ methyl_pop[k,i] <- 0} # draw a random number; methylate if below the baseline probability of methylating a site at random
+          } else {
+            if(runif(1) < ind_demeth_pref[i]*S_pop[i]){ methyl_pop[k,i] <- 0} # draw a random number; methylate if below the probability of preferentially methylating a site.
+          }
+        }
+      }
+    }
+      
+    # 3. Re-compute the stress level
+   # S_pop <- colSums(abs(methyl_pop-methyl_env))/num_C # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual. Normalize to total number of methylation sites
+    Stress_record_intermediate[j,] <- S_pop
+    
+    # 4. Methylate 
+    for(i in 1:pop_size){ # for each individual
+      for(k in 1:num_C){ # for each CpG site
+        if(methyl_pop[k,i]==0){ # if the site is presently demethylated
+          if(methyl_env[j,k]==0){ # if the environment should not be methylated at that site
+            if(runif(1) < ind_methyl[i]*S_pop[i]){ methyl_pop[k,i] <- 1} # draw a random number; methylate if below the baseline probability of methylating a site at random
+          } else { # if the environment should be methylated at that site
+            if(runif(1) < ind_methyl_pref[i]*S_pop[i]){ methyl_pop[k,i] <- 1} # draw a random number; methylate if below the probability of preferentially methylating a site.
+          }
+        }
+      }
+    }
+    
+    # Compute the number of methylated sites
+    Methyl_record[j,] <- colSums(methyl_pop)
+    
+    # 5. If it's a time for an environmental shift, shift the environment.
+    if(j < t_end){
+    methyl_env[j+1,] <- methyl_env[j,] # First, transfer environmental info from current timestep to the next
+    if(j %in% envshifts){
+      # First, identify the edges of the methylation band
+      leftedge <- 1 # Assume it's the left edge unless...
+      if(length(which(diff(methyl_env[j,])==1)) == 1 ){ # you find a sign change from 0 to 1
+        leftedge <- which(diff(methyl_env[j,])==1)+1
+      }
+      rightedge <- num_C # Assume it's the right edge unless...
+      if(length(which(diff(methyl_env[j,])==-1)) == 1 ){ # you find a sign change from 1 to 0
+        rightedge <- which(diff(methyl_env[j,])==-1)
+      }
+      # Second, demethylate
+      for(k in 1:envshiftsize){ # for each position in the shift size
+        positionj <- leftedge + k - 1 # Find the position for demethylation
+        if (positionj < num_C+1){ methyl_env[j+1,positionj] <- 0 # Check that you're not "off the edge"
+        } else{ methyl_env[j+1,positionj-num_C] <- 0 }  # wrap around if you are
+      # Third, methylate
+        positionj <- rightedge + k # Find the position for methylation
+        if(positionj < num_C+1){ methyl_env[j+1,positionj] <- 1 # check that you're not "off the edge"
+        } else{ methyl_env[j+1,positionj-num_C] <- 1 } } # wrap around if you are
+    } }
+      
+      
+      
+    
+    # 6. If it's time for a birth/death event, select an individual for replacement and replace them
+    if(j %in% birthdays){
+      # 7a. Find the individual with the lowest fitness (i.e., max stress)
+      killone <- which(S_pop %in% max(S_pop))[1] # [1] ensures that you choose the first one in case there is more than one individual with the same stress value
+      # 7b. Find the individual with the highest fitness (i.e., min stress)
+      reproduceone <- which(S_pop %in% min(S_pop))[1]
+      # 7c. Replace the individual
+      ind_methyl[killone] <- ind_methyl[reproduceone]
+      ind_methyl_pref[killone] <- ind_methyl_pref[reproduceone]
+      ind_demeth[killone] <- ind_demeth[reproduceone]
+      ind_demeth_pref[killone] <- ind_demeth_pref[reproduceone]
+      methyl_pop[,killone] <- methyl_pop[,reproduceone]
+    }
+    
+    
+    # 7. If it's time for a mutation, select an individual to be replaced by a mutant, and replace them
+    if(j %in% mutations){
+      # 7a. Find the individual with the lowest fitness (i.e., max stress)
+      killone <- which(S_pop %in% max(S_pop))[1] # [1] ensures that you choose the first one
+      # 7b. Find the individual with the highest fitness (i.e., min stress)
+      mutone <- which(S_pop %in% min(S_pop))[1]
+      # 7c. Replace the individual, with mutation
+      mut.demeth <- (ind_demeth[mutone]+ind_demeth_pref[mutone])/2 # figure out the current demethylation tendency
+      new.demeth <- max(0,rnorm(1,mut.demeth,mutationsd*mut.demeth)) # mutate it, making sure it's non-negative
+      
+      ind_methyl_pref[killone] <- ind_methyl_pref[mutone]
+      ind_methyl[killone] <- ind_methyl[mutone]
+      ind_demeth[killone] <- new.demeth*(1-epsilon)
+      ind_demeth_pref[killone] <- new.demeth*(1+epsilon)
+      methyl_pop[,killone] <- methyl_pop[,mutone]
+    }
+    
+    # 8. Store results from this timestep
+    DemethylRate_record[j,] <- ind_demeth
+    DemethylRatePref_record[j,] <- ind_demeth_pref
+    MethylRate_record[j,] <- ind_methyl
+    MethylRatePref_record[j,] <- ind_methyl_pref
+    MethylSite_record[,,j] <- methyl_pop
+    
+  }
+  
+  methylprop <- NaN*Stress_record
+for(i in 1:t_end){ # for each timepoint
+  for(j in 1:pop_size){ # for each individual
+    methylprop[i,j] <- sum(MethylSite_record[,j,i])/num_C
+  }
+}
+
+  Results <- list("Stress" = Stress_record, "Stress_int" = Stress_record_intermediate, "Methyl" = Methyl_record, "DemethRate" = DemethylRate_record,"DemethRatePref" = DemethylRatePref_record, "MethRate" = MethylRate_record, "MethRatePref" = MethylRatePref_record, "MethylSites"=MethylSite_record, "MethylProp" = methylprop,"Methyl_env"=methyl_env)
+  
+  Results
+}
+
+```
+
+
+Test bed for runs
+
+```{r}
+
+  
+## EPIGENETIC PARAMETERS 
+num_C <- 100 #= number of cytosine sites for methylation
+env_prop <- 0.5 #= proportion of environmental sites that are methylated
+demethylvar <- 0 #= variance in demethylation rates
+methyl_rate <- 0.1 #= baseline tendency for methylation
+methyl_rate_pref <- methyl_rate #= tendency for methylation of sites for which you have information they should be methylated to match the environment
+methylvar <- 0 #= variance in methylation rates
+epsilon <- 0.99  #= decoupling between demeth and pref demeth
+base <- 2
+demeth_rate <- base*(1-epsilon)*methyl_rate #= baseline tendency for demethylation
+demeth_rate_pref <- base*(1+epsilon)*methyl_rate #= tendency for demethylation of sites for which you have information they should be demethylated
+
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 5 #= size of population
+
+## RATE PARAMETERS
+envshiftfreq <- 200 #= frequency of environmental shifts
+envshiftsize <- 15 #= magnitude of environmental shifts
+replicatorfreq <- 0 #= frequency of birth/death events
+mutationfreq <- 0 #= frequency of mutation events
+mutationsd <- 0 #= standard deviation of mutation in any of the tendencies
+
+run1 <- methylmodel.periodic(num_C,env_prop,envshiftfreq,envshiftsize,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+# low-epsilon organism
+eps2 <- 0.5
+run1b <- methylmodel.periodic(num_C,env_prop,envshiftfreq,envshiftsize,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,base*(1-eps2)*methyl_rate,base*(1+eps2)*methyl_rate,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+
+## RATE PARAMETERS
+envshiftfreq2 <- 20 #= frequency of environmental shifts
+envshiftsize2 <- 1 #= magnitude of environmental shifts
+replicatorfreq <- 0 #= frequency of birth/death events
+mutationfreq <- 0 #= frequency of mutation events
+mutationsd <- 0 #= standard deviation of mutation in any of the tendencies
+
+run2 <- methylmodel.periodic(num_C,env_prop,envshiftfreq2,envshiftsize2,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+# low-epsilon organism
+run2b <- methylmodel.periodic(num_C,env_prop,envshiftfreq2,envshiftsize2,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,base*(1-eps2)*methyl_rate,base*(1+eps2)*methyl_rate,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+
+
+
+```
+
+
+```{r,fig.height=4,fig.width=3}
+
+#box.bg.col <- 'white'
+box.bg.col <- rgb(1,1,1,0.8)
+
+par(mar=c(0,4,3,1),mfrow=c(3,1))
+image(1:t_end,1:num_C,run1$Methyl_env,xlab='Time',ylab='',las=1,col=c('white','gray50'),xaxt='n',xlim=c(0,1000))
+axis(side=1,labels=F)
+text(x=0,y=92,'Environment',pos=4)
+par(mar=c(1.5,4,1.5,1))
+image(1:t_end,1:num_C,t(run1$MethylSites[,1,]),xlab='Time',ylab='Epigenetic Position',las=1,col=c('white',higheps.col),xaxt='n',xlim=c(0,1000))
+axis(side=1,labels=F)
+#text(x=0,y=92,substitute(paste(bold('Organism 1'))),pos=4,col='white')
+rect(25,85,275,99,col=box.bg.col,border=NA)
+text(x=0,y=92,'Organism 1',pos=4)
+par(mar=c(3,4,0,1))
+image(1:t_end,1:num_C,t(run1b$MethylSites[,1,]),xlab='Time',ylab='',las=1,col=c('white',loweps.col),xlim=c(0,1000))
+#text(x=0,y=92,substitute(paste(bold('Organism 2'))),pos=4,col='white')
+rect(25,85,275,99,col=box.bg.col,border=NA)
+text(x=0,y=92,'Organism 2',pos=4)
+mtext('Time',side=1,line=2.1,cex=.7)
+
+
+par(mar=c(0,4,3,1),mfrow=c(3,1))
+image(1:t_end,1:num_C,run2$Methyl_env,xlab='Time',ylab='',las=1,col=c('white','gray50'),xaxt='n',xlim=c(0,1000))
+axis(side=1,labels=F)
+text(x=0,y=92,'Environment',pos=4)
+par(mar=c(1.5,4,1.5,1))
+image(1:t_end,1:num_C,t(run2$MethylSites[,1,]),xlab='Time',ylab='Epigenetic Position',las=1,col=c('white',higheps.col),xaxt='n',xlim=c(0,1000))
+axis(side=1,labels=F)
+#text(x=0,y=92,substitute(paste(bold('Organism 1'))),pos=4,col='white')
+rect(25,85,275,99,col=box.bg.col,border=NA)
+text(x=0,y=92,'Organism 1',pos=4)
+par(mar=c(3,4,0,1))
+image(1:t_end,1:num_C,t(run2b$MethylSites[,1,]),xlab='Time',ylab='',las=1,col=c('white',loweps.col),xlim=c(0,1000))
+#text(x=0,y=92,substitute(paste(bold('Organism 2'))),pos=4,col='white')
+rect(25,85,275,99,col=box.bg.col,border=NA)
+text(x=0,y=92,'Organism 2',pos=4)
+mtext('Time',side=1,line=2.1,cex=.7)
+
+```
+
+
+
+```{r}
+
+
+par(mar=c(2,4,2,1))
+
+plot(run1$Stress,type='n',las=1,xlab='Time',ylab='Organism stress level',xlim=c(0,t_end*1.1),ylim=c(0,1))
+for(i in 1:pop_size){
+  lines(run1$Stress[,i],col='gray50')
+}
+lines(rowMeans(run1$Stress),lwd=2,col='black')
+
+concatdat <- run1$Stress[(t_end*.5):t_end,1]
+for(i in 2:pop_size){
+  concatdat <- c(concatdat,run1$Stress[(t_end*.5):t_end,i])
+}
+boxplot(concatdat,at=t_end*1.07,add=T,boxwex=t_end/10,xaxt='n',yaxt='n')
+
+
+
+
+par(mar=c(4,4,0,1))
+
+plot(run1$Stress,type='n',las=1,xlab='Time',ylab='Methylation proportion',xlim=c(0,t_end*1.1),ylim=c(0,1))
+for(i in 1:pop_size){
+  lines(run1$MethylProp[,i],col='gray50')
+}
+lines(rowMeans(run1$MethylProp),lwd=2,col='black')
+
+concatdat <- run1$MethylProp[(t_end*.5):t_end,1]
+for(i in 2:pop_size){
+  concatdat <- c(concatdat,run1$MethylProp[(t_end*.5):t_end,i])
+}
+boxplot(concatdat,at=t_end*1.07,add=T,boxwex=t_end/10,xaxt='n',yaxt='n')
+
+
+```
+
+
+Next, we're going to integrate this into a simulation that will create a heat map of stress based on environmental parameters.
+
+```{r}
+## EPIGENETIC PARAMETERS 
+num_C <- 100 #= number of cytosine sites for methylation
+env_prop <- 0.5 #= proportion of environmental sites that are methylated
+demethylvar <- 0 #= variance in demethylation rates
+methyl_rate <- 0.1 #= baseline tendency for methylation
+methyl_rate_pref <- methyl_rate #= tendency for methylation of sites for which you have information they should be methylated to match the environment
+methylvar <- 0 #= variance in methylation rates
+epsilon <- 0.99  #= decoupling between demeth and pref demeth
+demeth_rate <- (1-epsilon)*methyl_rate #= baseline tendency for demethylation
+demeth_rate_pref <- (1+epsilon)*methyl_rate #= tendency for demethylation of sites for which you have information they should be demethylated
+
+### ALTERNATE EVOLUTIONARY VERSION
+demeth_rate_base <- methyl_rate * evolved_demeth_slope + evolved_demeth_intercept
+demeth_rate <- (1-epsilon)*demeth_rate_base #= baseline tendency for demethylation
+demeth_rate_pref <- (1+epsilon)*demeth_rate_base #= tendency for demethylation of sites for which you have information they should be demethylated
+
+
+## SIMULATION PARAMETERS
+t_end <- 1000 #= end of simulation
+pop_size <- 20 #= size of population
+
+## BIOLOGICAL RATE PARAMETERS
+replicatorfreq <- 0 #= frequency of birth/death events
+mutationfreq <- 0 #= frequency of mutation events
+mutationsd <- 0 #= standard deviation of mutation in any of the tendencies
+
+# ENVIRONMENTAL PARAMETERS
+stepfreq_set <- rev(seq(from = 10, to = 200, by = 10))
+stepmag_set <- seq(from = 1, to = 30, by = 2)
+
+# RESULTS HOLDER
+stressmeans <- matrix(data=NA,nrow=length(stepfreq_set),ncol=length(stepmag_set))
+stresssds <- matrix(data=NA,nrow=length(stepfreq_set),ncol=length(stepmag_set))
+stressrange <- matrix(data=NA,nrow=length(stepfreq_set),ncol=length(stepmag_set))
+stressrange.min <- matrix(data=NA,nrow=length(stepfreq_set),ncol=length(stepmag_set))
+stressrange.max <- matrix(data=NA,nrow=length(stepfreq_set),ncol=length(stepmag_set))
+
+```
+
+```{r}
+for(ctr1 in 14:length(stepfreq_set)){
+  # Choose the frequency of environmental shifts
+  envshiftfreq <- stepfreq_set[ctr1]
+  for(ctr2 in 1:length(stepmag_set)){
+    # Choose the magnitude of environmental shifts
+    envshiftsize <- stepmag_set[ctr2]
+    
+    # Run the simulation
+    run1 <- methylmodel.periodic(num_C,env_prop,envshiftfreq,envshiftsize,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+    
+    # Store results
+    concatdat <- run1$Stress[(t_end*.5):t_end,1] # Use last 50% of data
+    for(i in 2:pop_size){  concatdat <- c(concatdat,run1$Stress[(t_end*.5):t_end,i]) }
+    
+    stressmeans[ctr1,ctr2] <- mean(concatdat)
+    stresssds[ctr1,ctr2] <- sd(concatdat)
+    stressrange[ctr1,ctr2] <- max(concatdat) - min(concatdat)
+    stressrange.min[ctr1,ctr2] <- min(concatdat)
+    stressrange.max[ctr1,ctr2] <- max(concatdat)
+  }
+}
+
+
+
+```
+
+
+```{r}
+#save.image("/Users/hollyvm/GoogleSync/Collaborations/URoL/EpigeneticsSimulation/RCode/EnviroChange_eps0p8_envmeth0p5.Rdata")
+```
+
+
+```{r,fig.width=10,fig.height=3}
+
+envshiftfreq1 <- 200 #= frequency of environmental shifts
+envshiftsize1 <- 15 #= magnitude of environmental shifts
+
+
+envshiftfreq2 <- 20 #= frequency of environmental shifts
+envshiftsize2 <- 1 #= magnitude of environmental shifts
+
+
+par(mar=c(3.5,3.5,1.5,5),mfrow=c(1,3))
+
+image.plot(x = max(stepfreq_set)-stepfreq_set, y = stepmag_set, z = stressmeans,las=1,xlab='', ylab = '',main='(a) Mean Stress',xaxt='n')#, zlim=c(.22,.5))
+#axis(side=1, at = max(stepfreq_set)-stepfreq_set,labels=stepfreq_set)
+axis(side=1, at = max(stepfreq_set)-stepfreq_set,labels=1/stepfreq_set)
+mtext('Environmental Change Magnitude',side=2,line=2.3,cex=.8)
+points(200-envshiftfreq1,envshiftsize1,pch=21,col='white',cex=2.5,xpd=T)
+text(200-envshiftfreq1,envshiftsize1,'1',col='white')
+points(200-envshiftfreq2,envshiftsize2,pch=21,col='white',cex=2.5,xpd=T)
+text(200-envshiftfreq2,envshiftsize2,'2',col='white')
+
+#par(mar=c(3.5,3,1.5,4.5))
+image.plot(x = max(stepfreq_set)-stepfreq_set, y = stepmag_set, z = stresssds,las=1,xlab='', ylab = '',main='(b) Stress Variance (std dev)',xaxt='n')#, zlim=c(.22,.5))
+#axis(side=1, at = max(stepfreq_set)-stepfreq_set,labels=stepfreq_set)
+axis(side=1, at = max(stepfreq_set)-stepfreq_set,labels=1/stepfreq_set)
+#mtext('Environmental Change Frequency (timesteps between perturbations)',side=1,line=2.3,cex=.8)
+mtext('Environmental Change Frequency (1/timesteps between perturbations)',side=1,line=2.3,cex=.8)
+points(200-envshiftfreq1,envshiftsize1,pch=21,col='white',cex=2.5,xpd=T)
+text(200-envshiftfreq1,envshiftsize1,'1',col='white')
+points(200-envshiftfreq2,envshiftsize2,pch=21,col='white',cex=2.5,xpd=T)
+text(200-envshiftfreq2,envshiftsize2,'2',col='white')
+
+
+image.plot(x = max(stepfreq_set)-stepfreq_set, y = stepmag_set, z = stressrange,las=1,xlab='', ylab = '',main='(c) Stress Range',xaxt='n')#, zlim=c(.22,.5))
+#axis(side=1, at = max(stepfreq_set)-stepfreq_set,labels=stepfreq_set)
+axis(side=1, at = max(stepfreq_set)-stepfreq_set,labels=1/stepfreq_set)
+points(200-envshiftfreq1,envshiftsize1,pch=21,col='white',cex=2.5,xpd=T)
+text(200-envshiftfreq1,envshiftsize1,'1',col='white')
+points(200-envshiftfreq2,envshiftsize2,pch=21,col='white',cex=2.5,xpd=T)
+text(200-envshiftfreq2,envshiftsize2,'2',col='white')
+
+
+
+```
+
+
+## Dependence of environmental tracking on the speed of epigenetic modifications
+```{r}
+# Organismal biology
+## Reminder of linear model for 'best' marker removal pairings w/ marker addition pairings, based on evolutionary simulations
+#evolved_demeth_intercept # the 'intercept' for an environment that is 50% marked
+#evolved_demeth_slope # the 'slope' for an environment that is 50% marked
+
+methyl_rate_set <- seq(from = 0, to = .2, length.out=25)
+demethyl_ref_rate_set <- methyl_rate_set*evolved_demeth_slope + evolved_demeth_intercept
+
+
+# Environmental conditions
+envshiftfreq_set <- c(10, 20, 50, 100, 200) #= frequency of environmental shifts in number of timesteps
+envshiftsize <- 15 #= magnitude of environmental shifts in number of positions
+t_end <- 3000
+
+
+# Storage variables
+stressmeans_methvar <- matrix(data=NA,nrow=length(methyl_rate_set),ncol=length(envshiftfreq_set))
+stresssds_methvar <- stressmeans_methvar
+stressrange_methvar <- stressmeans_methvar
+stressrange.min_methvar <- stressmeans_methvar
+stressrange.max_methvar <- stressmeans_methvar
+
+for(ctr2 in 1:length(envshiftfreq_set)){
+  envshiftfreq <- envshiftfreq_set[ctr2]
+  
+for(ctr1 in 1:length(methyl_rate_set)){
+  methyl_rate <- methyl_rate_set[ctr1]
+  methyl_rate_pref <- methyl_rate
+  demeth_rate <- (1-epsilon)*demethyl_ref_rate_set[ctr1]
+  demeth_rate_pref <- (1+epsilon)*demethyl_ref_rate_set[ctr1]
+
+ # Run the simulation
+    run1 <- methylmodel.periodic(num_C,env_prop,envshiftfreq,envshiftsize,replicatorfreq,mutationfreq,mutationsd,t_end,pop_size,demeth_rate,demeth_rate_pref,methyl_rate,methyl_rate_pref,methylvar,demethylvar,epsilon)
+    
+    # Store results
+    concatdat <- run1$Stress[(t_end*.5):t_end,1] # Use last 50% of data
+    for(i in 2:pop_size){  concatdat <- c(concatdat,run1$Stress[(t_end*.5):t_end,i]) }
+    
+    stressmeans_methvar[ctr1,ctr2] <- mean(concatdat)
+    stresssds_methvar[ctr1,ctr2] <- sd(concatdat)
+    stressrange_methvar[ctr1,ctr2] <- max(concatdat) - min(concatdat)
+    stressrange.min_methvar[ctr1,ctr2] <- min(concatdat)
+    stressrange.max_methvar[ctr1,ctr2] <- max(concatdat)
+    
+}}
+```
+
+
+```{r,fig.height=4,fig.width=6}
+
+par(mar=c(4,4,1,1))
+
+bwpalette <- colorRampPalette(c('gray80','black'))
+cols2use <- bwpalette(length(envshiftfreq_set))
+
+plot(methyl_rate_set,stressmeans_methvar[,1],ylim=c(0.1,0.5),las=1,type='n',xlab='',ylab='')
+mtext(expression(paste('Marker addition tendency (',italic(m[j]),')')),side=1,line=2.5)
+mtext(expression(paste('Mean stress level (',italic(S[j]),')')),side=2,line=2.5)
+for(i in 1:length(envshiftfreq_set)){
+  lines(methyl_rate_set,stressmeans_methvar[,i],lwd=2,col=cols2use[i])
+}
+legend(x='topright',inset=c(0.01,0.017),legend=rev(c('10, fast',20,50,100,'200, slow')),lwd=2,lty=1,col=rev(cols2use),title='Timesteps b/w shifts',cex=.85)
+```
+
+
+
+
+
+
+
+
+

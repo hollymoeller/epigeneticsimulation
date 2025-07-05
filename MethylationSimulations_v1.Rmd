@@ -1,0 +1,1451 @@
+---
+title: "Methylation Simulations"
+author: "Holly Moeller"
+date: "April 15, 2020"
+output: html_document
+---
+
+
+First simulation version: Alexandra's scenario -- demethylation is high when the match to the environment is poor. Remethylation happens continuously This results, ultimately, in convergence on a match to the environment.
+
+I interpreted this by allowing remethylation to also be proportional to mismatch with the environment. I was worried that if remethylation occurred at a "flat rate", the system would shift until all sites were either methylated or demethylated.
+
+```{r}
+
+
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 200 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.4 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.4 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+# 4. Compute the number of sites to methylate
+### OPTION ONE: methylate at a rate proportional to stress
+meth_pop <- round(S_pop*ind_methyl) # compute the number of sites that should be methylated
+
+### OPTION TWO: methylate at a fixed rate
+#meth_pop <- 0.1*num_C
+
+demethylsites_pop <- num_C - colSums(methyl_pop)
+## NB: HOLLY -- Here is where we would put in some kind of correction for a cap on methylation
+meth_pop <- apply(rbind(meth_pop,demethylsites_pop),MARGIN=2,FUN=min) 
+
+# 5. Methylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently demethylated
+positions <- which(methyl_pop[,i]==0)
+# select a number of them to methylate
+meth.positions <- sample(positions,meth_pop[i],replace=FALSE)
+# and set those to one
+methyl_pop[meth.positions,i] <- 1
+}
+
+}
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+
+```
+
+
+I tried different baseline environmental methylation levels, as well as implementing a flat methylation rate (instead of one that is proportional to stress) to no avail: always the environmental mismatch was flat over time.
+
+To me, this strongly suggests the need for some environment-mediated feedback, e.g., the ability to detect *which* methylated (or demethylated) sites match the environment. I think it'd be useful to chat with the empiricists about what this would look like.
+
+As a first pass, I decided to try a scenario in which methylation occurs preferentially at sites that are mismatched with the environment. This is because I have the impression from Steven and Hollie that *demethylation* is random.
+
+
+```{r}
+
+
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 200 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- rep(.5*env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.02 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.02 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+
+}
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+
+# plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,10),xlab='Time',ylab='Environmental Mismatch',las=1)
+# grid(10,10)
+# for(i in 2:pop_size){
+# 	lines(tset,Stress_record[,i],col='gray80')
+# }
+# lines(tset,rowMeans(Stress_record),lwd=2)
+
+```
+
+
+Some anecdotal observations:
+
+1. I'm not sure why the environmental mismatch doesn't shrink to zero eventually.  -- later note (April 16 2020) -- this is because there's a mismatch between the number of methylated sites of the organism, and the number of methylated sites that's the "ideal" match to the environment. Because demethylation and methylation rates are matched, the total number of methylated sites stays the same for an individual, so if the environment wants 100 methylated and the organism started w/ 90, its mismatch can be at minimum 10.
+2. The methylation and demethylation rates must be matched for things to not blow up.
+3. The slower these rates, the higher the degree of environmental mismatch.
+4. Playing with initial methylation state (relative to the environment) exacerbates the mismatch.
+
+This model could probably be improved by changing the way the methylation/demethylation happens -- more specifically, by methylating from mismatched sites *probabilistically* rather than always from mismatched sites (and then randomly from other sites).
+
+
+But, I can't wait -- I really want to see what happens when I "kick" the system...
+
+
+```{r}
+
+
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 200 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.02 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.02 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+envshifts <- c(500,1000,1500)
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+
+
+
+}
+
+
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+
+
+```
+
+
+
+## Continued modifications, 21 April 2020
+
+I'm going to force each individual to have the ''correct'' (environment-matching) number of methylation sites and check to see that this allows the environmental mismatch to fall to zero.
+
+Note that to do this, I have to have methylation and demethylation rates be sufficiently high... if they are too low, the environmental mismatch score is insufficient to force any methylation or demethylation to happen (i.e., S * demeth rate rounds to 0), so you get stuck with a mismatch of a magnitude that is inversely proportional to demethylation (and methylation) rate.
+
+```{r}
+
+
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 200 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.2 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.2 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+envshifts <- c(500,1000,1500)
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+	while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+
+
+
+}
+
+
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+abline(h=0)
+
+
+```
+
+
+
+
+
+Next I want to try re-calculating the stress parameter between the demethylation and re-methylation steps.
+
+
+```{r}
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 2000 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.2 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.175 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+envshifts <- c(500,1000,1500)
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+  while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation number to be the same as the environment 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Re-compute the stress level
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+
+
+
+}
+
+
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+abline(h=0)
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,400),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+abline(h=0)
+
+
+plot(tset,Stress_record_intermediate[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch - intermediate',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record_intermediate[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record_intermediate),lwd=2)
+abline(h=0)
+
+colSums(methyl_pop)
+```
+
+If I set the demethylation rate to be slightly lower than the methylation rate, I can have a system that doesn't behave too terribly... but it's quite sensitive. Having a methylation rate that's the same as the demethylation rate causes you to rapidly go to full methylation. And one that's too small causes you to rapidly go to total demethylation. The more methylation sites you have, the lower the demethylation rate can be. (There is probably an analytical relationship here? We could compute this from the expected number of demethylated sites, and what we expect to happen to the number of mismatches accordingly?)
+
+
+
+I am also curious about what happens if you relax the assumption that methylation is preferential (e.g., based on matches to the environment). In this case, this did not improve things...
+
+```{r}
+
+
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 200 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.4 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.4 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+# RECOMPUTE STRESS
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+# 4. Compute the number of sites to methylate
+### OPTION ONE: methylate at a rate proportional to stress
+meth_pop <- round(S_pop*ind_methyl) # compute the number of sites that should be methylated
+
+### OPTION TWO: methylate at a fixed rate
+#meth_pop <- 0.1*num_C
+
+demethylsites_pop <- num_C - colSums(methyl_pop)
+## NB: HOLLY -- Here is where we would put in some kind of correction for a cap on methylation
+meth_pop <- apply(rbind(meth_pop,demethylsites_pop),MARGIN=2,FUN=min) 
+
+# 5. Methylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently demethylated
+positions <- which(methyl_pop[,i]==0)
+# select a number of them to methylate
+meth.positions <- sample(positions,meth_pop[i],replace=FALSE)
+# and set those to one
+methyl_pop[meth.positions,i] <- 1
+}
+
+}
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+
+colSums(methyl_pop)
+
+```
+
+
+
+Interestingly, an advantage of having the recalculation of the stress levels is that I can relax the "match" between the methylation number of the individuals and the ideal environmental methylation number and still recover the shift to match to the environment over time. 
+
+```{r}
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 2000 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- 0.5*rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.4# 0.2 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <-0.3# 0.175 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+#envshifts <- c(500,1000,1500)
+envshifts <- round(seq(from = 400, to = 1600, length.out=5))
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+  #while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation number to be the same as the environment 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Re-compute the stress level
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+
+
+
+}
+
+
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C*.55),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+abline(h=0)
+
+
+plot(tset,Stress_record_intermediate[,1],type='l',col='gray80',ylim=c(0,num_C*.55),xlab='Time',ylab='Environmental Mismatch - intermediate',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record_intermediate[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record_intermediate),lwd=2)
+abline(h=0)
+
+colSums(methyl_pop)
+```
+
+It's curious to me that the environmental match sometimes improves with the first couple of perturbations.
+
+In poking around at this model, it seems like you always "want" your demethylation rate to be higher than your methylation rate. (Presumably you just want the rate of whatever process comes first to be highest, because after that happens, your mismatch to the environment will have increased and so you need the second rate to be lower so that the balance of these rates times the mismatch stress is about the same.)
+
+But there's no initially "obvious" pattern (e.g., fixed ratio) between these rates and the number of possible methylation sites, etc. I have anecdotally observed that:
+(1) the more methylate-able sites you have, the greater the mismatch between the rates should be to be able to track the environment;
+(2) the greater the rates are, the larger the mismatch between them has to be (and it's not just a proportional difference)
+
+I think there's some cool evolutionary work that could be done here -- you could look for the "ideal" methylation rate given a particular demethylation rate. And you could look at how these rates change the speed at which you can track the environment. For example, should you crank up the rates to be as high as possible so that you get to your match faster? Is there such a thing as a rate that is too high? As rates get higher, does the "margin for error" (e.g., range in the corresponding other rate that you can have without losing your ability to at least somewhat track the environment) get smaller or larger?
+
+Possible next steps include:
+(1) "manual" exploration of parameter space, especially parameter sweeps in which response variables like "time to plateau in environmental mismatch" and "magnitude of environmental mismatch" are quantified, 
+(2) building in a fitness consequence, so that individuals with a higher environmental mismatch have a lower chance of reproducing, so that we can work towards an eco-evo framework. 
+
+
+## Parameter comparisons, April 22 2020
+
+Messing around with varying the parameters of the run (especially demethylation and methylation rates).
+
+```{r}
+
+## RUN PARAMETERS
+# Variables of interest
+demeth_rate_set <- c(0.4,0.4,0.4,0.4)
+meth_rate_set <- c(0.2,0.3,0.4,0.5)
+
+# Environmental target
+num_C <- 2000 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- 0.5*rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+
+
+# Simulation duration
+t_end <- 1000
+tset <- c(1:t_end)
+
+#envshifts <- c(500,1000,1500)
+envshifts <- round(seq(from = 1, to = 1000, length.out=4))
+
+
+
+# HOLDING VARIABLES
+Stress_record_mean <- matrix(data=NA, nrow=length(demeth_rate_set),ncol=t_end)
+Stress_record_intermed_mean <- Stress_record_mean
+methylated_sites_mean <- Stress_record_mean
+
+
+## SIMULATION
+
+for(k in 1:length(demeth_rate_set)){
+
+# Set individual rates
+demeth_rate <- demeth_rate_set[k] # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- meth_rate_set[k] # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+  #while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation number to be the same as the environment 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Re-compute the stress level
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# Compute the mean number of methylated sites
+methylated_sites_mean[k,j] <- mean(colSums(methyl_pop))
+
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+}
+
+# Record the mean stress levels over time
+Stress_record_mean[k,] <- rowMeans(Stress_record)
+Stress_record_intermed_mean[k,] <- rowMeans(Stress_record_intermediate)
+}
+
+
+```
+
+```{r}
+
+plot(tset,Stress_record_mean[1,],type='n',lty=1,las=1,ylim=c(0,.55*num_C),ylab='Mean Stress',xlab='Time')
+for(i in 1:length(demeth_rate_set)){
+  lines(tset,Stress_record_mean[i,],lty=i,lwd=2)
+}
+legend(x=0.7*t_end,y=0.25*num_C,legend=paste('de: ',demeth_rate_set,', re: ',meth_rate_set,sep=''),lwd=2,lty=1:length(demeth_rate_set))
+```
+
+
+```{r}
+
+## RUN PARAMETERS
+# Variables of interest
+demeth_rate_set <- c(0.5,0.4,0.2,0.1)
+meth_rate_set <- c(0.35,0.3,0.175,0.095)
+
+# Environmental target
+num_C <- 2000 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- 0.5*rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+
+
+# Simulation duration
+t_end <- 1000
+tset <- c(1:t_end)
+
+#envshifts <- c(500,1000,1500)
+envshifts <- round(seq(from = 1, to = 1000, length.out=4))
+
+
+
+# HOLDING VARIABLES
+Stress_record_mean <- matrix(data=NA, nrow=length(demeth_rate_set),ncol=t_end)
+Stress_record_intermed_mean <- Stress_record_mean
+methylated_sites_mean <- Stress_record_mean
+
+
+## SIMULATION
+
+for(k in 1:length(demeth_rate_set)){
+
+# Set individual rates
+demeth_rate <- demeth_rate_set[k] # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- meth_rate_set[k] # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+  #while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation number to be the same as the environment 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Re-compute the stress level
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# Compute the mean number of methylated sites
+methylated_sites_mean[k,j] <- mean(colSums(methyl_pop))
+
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+}
+
+# Record the mean stress levels over time
+Stress_record_mean[k,] <- rowMeans(Stress_record)
+Stress_record_intermed_mean[k,] <- rowMeans(Stress_record_intermediate)
+}
+
+
+```
+
+```{r}
+plot(tset,Stress_record_mean[1,],type='n',lty=1,las=1,ylim=c(0,.55*num_C),ylab='Mean Stress',xlab='Time')
+for(i in 1:length(demeth_rate_set)){
+  lines(tset,Stress_record_mean[i,],lty=i,lwd=2)
+}
+legend(x=0.7*t_end,y=0.5*num_C,legend=paste('de: ',demeth_rate_set,', re: ',meth_rate_set,sep=''),lwd=2,lty=1:length(demeth_rate_set))
+```
+
+
+
+
+```{r}
+
+## RUN PARAMETERS
+# Variables of interest
+demeth_rate_set <- rep(0.2,4)
+meth_rate_set <- c(0.185,0.18,0.175,0.17)
+
+# Environmental target
+num_C <- 2000 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 10 # number of individuals in the population
+ind_prop <- 0.5*rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+#envshifts <- c(500,1000,1500)
+envshifts <- round(seq(from = 1, to = t_end, length.out=7))
+
+
+
+# HOLDING VARIABLES
+Stress_record_mean <- matrix(data=NA, nrow=length(demeth_rate_set),ncol=t_end)
+Stress_record_intermed_mean <- Stress_record_mean
+methylated_sites_mean <- Stress_record_mean
+
+
+## SIMULATION
+
+for(k in 1:length(demeth_rate_set)){
+
+# Set individual rates
+demeth_rate <- demeth_rate_set[k] # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- meth_rate_set[k] # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+  #while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation number to be the same as the environment 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Re-compute the stress level
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# Compute the mean number of methylated sites
+methylated_sites_mean[k,j] <- mean(colSums(methyl_pop))
+
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+}
+
+# Record the mean stress levels over time
+Stress_record_mean[k,] <- rowMeans(Stress_record)
+Stress_record_intermed_mean[k,] <- rowMeans(Stress_record_intermediate)
+}
+
+
+```
+
+```{r}
+plot(tset,Stress_record_mean[1,],type='n',lty=1,las=1,ylim=c(0,.55*num_C),ylab='Mean Stress',xlab='Time')
+for(i in 1:length(demeth_rate_set)){
+  lines(tset,Stress_record_mean[i,],lty=i,lwd=2)
+}
+legend(x=0.7*t_end,y=0.5*num_C,legend=paste('de: ',demeth_rate_set,', re: ',meth_rate_set,sep=''),lwd=2,lty=1:length(demeth_rate_set))
+```
+
+
+
+
+Miscellaneous trials
+
+```{r}
+## RUN PARAMETERS
+
+# Environmental target
+num_C <- 2000 # number of cytosine sites in the genome
+env_prop <- 0.5 # proportion of those cytosine sites that are methylated in a "perfect" match to the environment
+methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+#sum(methyl_env) # checks the result of the above
+
+
+# Population properties
+pop_size <- 20 # number of individuals in the population
+ind_prop <- rep(env_prop,pop_size) # proportion of methylated sites each individual should have ## NB: This isn't worked through in the model for now because I'm hoping that a sort of optimal methylation level will emerge from the model
+demeth_rate <- 0.4 #0.2 # rate at which you demethylate (slope of the relationship between stress and number of sites demethylated at each time step)
+ind_demeth <- rep(demeth_rate,pop_size)
+methyl_rate <- 0.3 #0.175 # rate at which you methylate (slope of the relationship between stress and number of sites methylated at each time step)
+ind_methyl <- rep(methyl_rate,pop_size)
+
+
+
+# Simulation duration
+t_end <- 2000
+tset <- c(1:t_end)
+
+envshifts <- c(1000)
+
+
+## SIMULATION
+
+
+# initial methylation state of the individuals in the population
+methyl_pop <- matrix(data=NA,ncol=pop_size,nrow=num_C)
+for(i in 1:pop_size){
+	methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i])
+  while(sum(methyl_pop[,i])!=round(num_C*ind_prop[i])){ methyl_pop[,i] <- rbinom(num_C,1,ind_prop[i]) } # forces the methylation number to be the same as the environment 
+}
+
+
+Stress_record <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+Stress_record_intermediate <- matrix(data=NA,nrow=t_end,ncol=pop_size)
+methyl_record <- Stress_record
+
+for(j in 1:t_end){
+
+# For each timestep
+# 1. Compute the "stress" level of each individual
+S_pop <- colSums(abs(methyl_pop-methyl_env)) # sum over the absolute value of the difference between methylation states in each cytosine position, for every individual.
+
+Stress_record[j,] <- S_pop
+methyl_record[j,] <- colSums(methyl_pop)
+
+# 2. Compute the number of sites to demethylate
+demeth_pop <- round(S_pop*ind_demeth) # compute the number of sites that should be demethylated
+### CHECKER PLOT: plot(S_pop,demeth_pop); abline(b=demeth_rate,a=0)
+# but you can't demethylate more than the existing number of methylated sites
+methylsites_pop <- colSums(methyl_pop)
+demeth_pop <- apply(rbind(demeth_pop,methylsites_pop),MARGIN=2,FUN=min) # The apply function takes the minimum by column (argument MARGIN = 2) of a data frame that has bound the number of target demethylation sites with the number of actually available methylation sites.
+
+# 3. Demethylate sites randomly
+for(i in 1:pop_size){
+# want to know which positions are presently methylated
+positions <- which(methyl_pop[,i]==1)
+# select a number of them to demethylate
+demeth.positions <- sample(positions,demeth_pop[i],replace=FALSE)
+# and set those to zero
+methyl_pop[demeth.positions,i] <- 0
+}
+
+
+# 4. Re-compute the stress level
+S_pop <- colSums(abs(methyl_pop-methyl_env))
+Stress_record_intermediate[j,] <- S_pop
+
+# 4. Methylate sites that are mismatched with the environment
+
+for(i in 1:pop_size){
+  # identify sites that are demethylated but should be methylated to match the environment
+  positions <- which((methyl_pop[,i]-methyl_env)==-1)
+  
+  # compute the number of sites that should be methylated
+  meth_num <- min(round(S_pop[i]*ind_methyl[i]),num_C-sum(methyl_pop[,i]))
+  
+  # methylate sites
+  if(meth_num > length(positions)){ # if the sites you need to methylate exceed the environmental matches
+    methyl_pop[positions,i] <- 1 # methylate all the environmental matches
+    positions2 <- which(methyl_pop[,i]==0) # find the remaining demethylated positions
+    meth.positions <- sample(positions2,meth_num-length(positions),replace=FALSE) # select a number of them to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  } else{ # otherwise
+    test <- 1
+    meth.positions <- sample(positions,meth_num,replace=FALSE) # select a number of the environmental matches to methylate
+    methyl_pop[meth.positions,i] <- 1 # and methylate them
+  }
+  
+}
+
+# 5. If it's a time for an environmental shift, shift the environment.
+if(j %in% envshifts){
+  methyl_env <- rbinom(num_C,1,env_prop) # draws the environmental methylation target using a binomial distribution
+  while(sum(methyl_env)!=round(num_C*env_prop)){ methyl_env <- rbinom(num_C,1,env_prop) } # forces the methylation state to have the specified proportion of methylated sites
+}
+
+
+
+}
+
+
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+abline(h=0)
+
+plot(tset,Stress_record[,1],type='l',col='gray80',ylim=c(0,400),xlab='Time',ylab='Environmental Mismatch',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record),lwd=2)
+abline(h=0)
+
+
+plot(tset,Stress_record_intermediate[,1],type='l',col='gray80',ylim=c(0,num_C),xlab='Time',ylab='Environmental Mismatch - intermediate',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,Stress_record_intermediate[,i],col='gray80')
+}
+lines(tset,rowMeans(Stress_record_intermediate),lwd=2)
+abline(h=0)
+
+```
+```{r}
+
+plot(tset,methyl_record[,1],type='l',col='gray80',ylim=c(900,1100),xlab='Time',ylab='Number of Methylated Sites',las=1)
+grid(10,10)
+for(i in 2:pop_size){
+	lines(tset,methyl_record[,i],col='gray80')
+}
+lines(tset,rowMeans(methyl_record),lwd=2)
+abline(h=0)
+
+
+colSums(methyl_pop)
+```
+
+
+
